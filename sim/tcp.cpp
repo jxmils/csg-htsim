@@ -9,6 +9,8 @@
 //  TCP SOURCE
 ////////////////////////////////////////////////////////////////
 
+uint64_t TcpSrc::_global_rtx_count = 0;
+
 TcpSrc::TcpSrc(TcpLogger* logger, TrafficLogger* pktlogger, 
                EventList &eventlist)
     : EventSource(eventlist,"tcp"),  _logger(logger), _flow(pktlogger)
@@ -486,6 +488,7 @@ TcpSrc::send_packets() {
 
 void 
 TcpSrc::retransmit_packet() {
+    _global_rtx_count++;
     if (!_established){
         assert(_highest_sent == 1);
 

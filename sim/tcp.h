@@ -49,6 +49,10 @@ public:
     flowid_t getFlowId() {return _flow.flow_id();}
     void set_ssthresh(uint64_t s){_ssthresh = s;}
     void set_cwnd(uint64_t s){_cwnd = s;}
+    // Total retransmissions across all TcpSrc instances (RTO and fast
+    // retransmit both funnel through retransmit_packet). Lets a caller
+    // assert loss-freedom after a run.
+    static uint64_t _global_rtx_count;
     void set_dst(int d){_dst=d;}
     int  get_dst(){return _dst;}
 
