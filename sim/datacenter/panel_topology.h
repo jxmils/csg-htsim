@@ -60,7 +60,7 @@ class LedgerQueue : public Queue {
 
 class PanelTopology : public Topology {
   public:
-    enum class Base { None, Mesh2D, Torus2D, Mesh3D, Torus3D };
+    enum class Base { None, Ring1D, Mesh2D, Torus2D, Mesh3D, Torus3D };
 
     // One route candidate, with the metadata the frontend's cost function and
     // telemetry need. hop_queues are the LedgerQueues along the path in order.

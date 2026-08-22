@@ -17,6 +17,7 @@ PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
       _logfile(logfile), _ev(ev) {
     switch (base) {
         case Base::None:    _dims = 0; _wrap = false; break;
+        case Base::Ring1D:  _dims = 1; _wrap = true;  break;
         case Base::Mesh2D:  _dims = 2; _wrap = false; break;
         case Base::Torus2D: _dims = 2; _wrap = true;  break;
         case Base::Mesh3D:  _dims = 3; _wrap = false; break;
