@@ -97,3 +97,12 @@ main_eqds.o: main_eqds.cpp
 
 clean:	
 	rm -f *.o htsim_ndp* htsim_swift* htsim_tcp* htsim_dctcp* htsim_roce* htsim_hpcc*
+
+htsim_panel_replay: main_panel_replay.o panel_topology.o ../libhtsim.a
+	$(CC) $(CFLAGS) main_panel_replay.o panel_topology.o $(LIB) -lhtsim -o htsim_panel_replay
+
+main_panel_replay.o: main_panel_replay.cpp ${DEPS} panel_topology.h
+	$(CC) $(INCLUDE) $(CFLAGS) -c main_panel_replay.cpp
+
+panel_topology.o: panel_topology.cpp panel_topology.h ${DEPS}
+	$(CC) $(INCLUDE) $(CFLAGS) -c panel_topology.cpp
