@@ -60,7 +60,7 @@ class LedgerQueue : public Queue {
 
 class PanelTopology : public Topology {
   public:
-    enum class Base { None, Ring1D, Mesh2D, Torus2D, Mesh3D, Torus3D };
+    enum class Base { None, Ring1D, Mesh2D, Torus2D, Mesh3D, Torus3D, RingRows };
 
     // One route candidate, with the metadata the frontend's cost function and
     // telemetry need. hop_queues are the LedgerQueues along the path in order.
@@ -73,10 +73,12 @@ class PanelTopology : public Topology {
         std::vector<LedgerQueue*> hop_queues;
     };
 
+    // extents: per-dimension sizes (e.g. {4,8,8}); empty = uniform grid.
     PanelTopology(uint32_t npus, Base base, int planes,
                   double base_gibps, simtime_picosec base_latency,
                   double plane_gibps, simtime_picosec plane_latency,
-                  mem_b queuesize, Logfile* logfile, EventList* ev);
+                  mem_b queuesize, Logfile* logfile, EventList* ev,
+                  const std::vector<int>& extents = std::vector<int>());
 
     // Topology interface. Returns the candidate Routes (copies of route
     // structure, same queue objects): direct first (if a base fabric exists),
@@ -97,7 +99,7 @@ class PanelTopology : public Topology {
     uint32_t _n;
     Base _base;
     int _dims;            // 2 or 3 (0 when Base::None)
-    int _extent;          // per-dimension extent
+    std::vector<int> _extents;   // per-dimension extents
     bool _wrap;
     int _planes;
     mem_b _queuesize;
@@ -116,7 +118,7 @@ class PanelTopology : public Topology {
     int coord(uint32_t id, int dim) const;
     uint32_t id_of(const std::vector<int>& c) const;
     // one dimension-order step; returns port index used and updates cur
-    int step_towards(int& cur, int target, bool tie_backward) const;
+    int step_towards(int& cur, int target, bool tie_backward, int extent) const;
     LedgerQueue* make_queue(double gibps, const std::string& name);
     Pipe* make_pipe(simtime_picosec lat, const std::string& name);
     void build_base(double gibps, simtime_picosec lat);

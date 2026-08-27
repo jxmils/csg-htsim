@@ -12,7 +12,8 @@ static string ntos(int v) { stringstream s; s << v; return s.str(); }
 PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
                              double base_gibps, simtime_picosec base_latency,
                              double plane_gibps, simtime_picosec plane_latency,
-                             mem_b queuesize, Logfile* logfile, EventList* ev)
+                             mem_b queuesize, Logfile* logfile, EventList* ev,
+                             const std::vector<int>& extents)
     : _n(npus), _base(base), _planes(planes), _queuesize(queuesize),
       _logfile(logfile), _ev(ev) {
     switch (base) {
@@ -22,11 +23,17 @@ PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
         case Base::Torus2D: _dims = 2; _wrap = true;  break;
         case Base::Mesh3D:  _dims = 3; _wrap = false; break;
         case Base::Torus3D: _dims = 3; _wrap = true;  break;
+        case Base::RingRows: _dims = 2; _wrap = true; break;
     }
     if (_dims > 0) {
-        _extent = (int)lround(pow((double)npus, 1.0 / _dims));
+        if (!extents.empty() && (int)extents.size() != _dims) {
+            cerr << "PanelTopology: extents size mismatch" << endl; exit(1);
+        }
+        if (!extents.empty()) _extents = extents;
+        else _extents.assign(_dims,
+                             (int)lround(pow((double)npus, 1.0 / _dims)));
         int check = 1;
-        for (int d = 0; d < _dims; d++) check *= _extent;
+        for (int d = 0; d < _dims; d++) check *= _extents[d];
         if ((uint32_t)check != npus) {
             cerr << "PanelTopology: npus " << npus << " is not a perfect "
                  << _dims << "-dim grid" << endl;
@@ -56,13 +63,13 @@ Pipe* PanelTopology::make_pipe(simtime_picosec lat, const string& name) {
 
 int PanelTopology::coord(uint32_t id, int dim) const {
     uint32_t v = id;
-    for (int d = 0; d < dim; d++) v /= _extent;
-    return (int)(v % _extent);
+    for (int d = 0; d < dim; d++) v /= _extents[d];
+    return (int)(v % _extents[dim]);
 }
 
 uint32_t PanelTopology::id_of(const vector<int>& c) const {
     uint32_t id = 0;
-    for (int d = _dims - 1; d >= 0; d--) id = id * _extent + c[d];
+    for (int d = _dims - 1; d >= 0; d--) id = id * _extents[d] + c[d];
     return id;
 }
 
@@ -72,15 +79,16 @@ void PanelTopology::build_base(double gibps, simtime_picosec lat) {
     _dir_p.assign(_n, vector<Pipe*>(2 * _dims, (Pipe*)NULL));
     for (uint32_t node = 0; node < _n; node++) {
         for (int d = 0; d < _dims; d++) {
+            if (_base == Base::RingRows && d > 0) continue;  // no column links
             int c = coord(node, d);
-            bool plus_exists = (c + 1 < _extent) || _wrap;
+            bool plus_exists = (c + 1 < _extents[d]) || _wrap;
             bool minus_exists = (c > 0) || _wrap;
-            if (_extent <= 2) {
+            if (_extents[d] <= 2) {
                 // extent 2: +1 and -1 reach the same neighbour; wrap adds no
                 // second edge. Only the + port exists (matches Mesh2D's
                 // "wraparound && width > 2" guard in the analytical study).
                 minus_exists = false;
-                plus_exists = (c + 1 < _extent) || _wrap;
+                plus_exists = (c + 1 < _extents[d]) || _wrap;
             }
             if (plus_exists) {
                 _dir_q[node][2 * d] = make_queue(gibps,
@@ -113,20 +121,21 @@ void PanelTopology::build_planes(double gibps, simtime_picosec lat) {
     }
 }
 
-int PanelTopology::step_towards(int& cur, int target, bool tie_backward) const {
+int PanelTopology::step_towards(int& cur, int target, bool tie_backward,
+                                int extent) const {
     int port;
     if (!_wrap) {
         if (target > cur) { cur++; port = 0; }
         else { cur--; port = 1; }
     } else {
-        int fwd = ((target - cur) % _extent + _extent) % _extent;
-        int bwd = _extent - fwd;
+        int fwd = ((target - cur) % extent + extent) % extent;
+        int bwd = extent - fwd;
         bool go_fwd;
         if (fwd < bwd) go_fwd = true;
         else if (bwd < fwd) go_fwd = false;
         else go_fwd = !tie_backward;   // antipodal: split by source parity
-        if (go_fwd) { cur = (cur + 1) % _extent; port = 0; }
-        else { cur = (cur - 1 + _extent) % _extent; port = 1; }
+        if (go_fwd) { cur = (cur + 1) % extent; port = 0; }
+        else { cur = (cur - 1 + extent) % extent; port = 1; }
     }
     return port;
 }
@@ -146,9 +155,9 @@ PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t 
         bool tie_backward = (coord(src, d) & 1) != 0;
         while (c[d] != t[d]) {
             uint32_t at = id_of(c);
-            int port = step_towards(c[d], t[d], tie_backward);
+            int port = step_towards(c[d], t[d], tie_backward, _extents[d]);
             int pidx = 2 * d + port;
-            if (_extent == 2 && _dir_q[at][pidx] == NULL) pidx = 2 * d;  // folded pair
+            if (_extents[d] == 2 && _dir_q[at][pidx] == NULL) pidx = 2 * d;  // folded pair
             LedgerQueue* q = _dir_q[at][pidx];
             Pipe* p = _dir_p[at][pidx];
             assert(q && p);
@@ -182,7 +191,10 @@ PanelTopology::Candidate PanelTopology::plane_candidate(uint32_t src, uint32_t d
 vector<PanelTopology::Candidate>* PanelTopology::get_candidates(uint32_t src, uint32_t dest) {
     assert(src < _n && dest < _n && src != dest);
     vector<Candidate>* out = new vector<Candidate>();
-    if (_dims > 0) out->push_back(direct_candidate(src, dest));
+    bool direct_ok = (_dims > 0);
+    if (_base == Base::RingRows && coord(src, 1) != coord(dest, 1))
+        direct_ok = false;   // rows are disjoint rings; cross-row is optical-only
+    if (direct_ok) out->push_back(direct_candidate(src, dest));
     for (int pl = 0; pl < _planes; pl++) out->push_back(plane_candidate(src, dest, pl));
     return out;
 }
