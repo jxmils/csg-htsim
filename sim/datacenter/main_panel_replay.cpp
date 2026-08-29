@@ -16,6 +16,7 @@
 #include "logfile.h"
 #include "clock.h"
 #include "tcp.h"
+#include "mtcp.h"
 #include "panel_topology.h"
 #include <cstdio>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include <set>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 using namespace std;
 
@@ -60,9 +62,42 @@ static uint64_t g_direct_bytes = 0, g_plane_bytes = 0;
 static void launch_phase();
 static void report_and_exit();
 
+// --- compiled mode (QTP-style): per phase, offload the heaviest pairs to the
+// planes until plane serialization balances DOR torus load, edge-color the
+// offloaded pairs into matching epochs, and gate optical flows by epoch with
+// drain-based advancement (matchings persist; T_r on epoch change).
+static bool g_compiled = false;
+static int g_forced_plane = -2;        // -2 = policy; -1 = direct; >=0 plane
+struct EpochFlow { uint32_t s, d; uint64_t bytes; };
+struct Flow_fwd;   // (Flow defined earlier)
+static std::vector<std::vector<Flow>> g_plane_epochs[2];   // per plane chains
+static size_t g_plane_cur[2] = {0, 0};
+static size_t g_plane_outstanding[2] = {0, 0};
+static std::map<int, int> g_epoch_tag_plane;
+static int torus_hops_replay(uint32_t s, uint32_t d) {
+    int ex = 8, hops = 0;
+    int xs = s % ex, ys = s / ex, xd = d % ex, yd = d / ex;
+    int dx = abs(xd - xs); dx = std::min(dx, ex - dx);
+    int dy = abs(yd - ys); dy = std::min(dy, ex - dy);
+    return dx + dy;
+}
+static void launch_epoch_on(int pl);
+
+static bool g_flow_is_epoch = false;   // set while launching epoch flows
+
 static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
     if (g_done_tags.count(tag)) return;
     g_done_tags.insert(tag);
+    if (g_compiled) {
+        auto it = g_epoch_tag_plane.find(tag);
+        if (it != g_epoch_tag_plane.end()) {
+            int pl = it->second;
+            g_epoch_tag_plane.erase(it);
+            if (--g_plane_outstanding[pl] == 0) {
+                g_plane_cur[pl]++; launch_epoch_on(pl);
+            }
+        }
+    }
     if (--g_outstanding == 0) {
         g_phase_end.push_back(g_ev->now());
         g_phase++;
@@ -70,15 +105,29 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
     }
 }
 
+static void start_flow(uint32_t s, uint32_t d, uint64_t bytes);
+static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane);
+
 static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
     vector<PanelTopology::Candidate>* cands = g_top->get_candidates(s, d);
     simtime_picosec now = g_ev->now();
     int best = -1; double best_cost = 0; bool best_reuse = false;
     simtime_picosec best_start = now;
     int direct_idx = -1; double direct_cost = 0;
+    if (g_forced_plane != -2) {
+        for (size_t ci = 0; ci < cands->size(); ci++) {
+            PanelTopology::Candidate& cd = (*cands)[ci];
+            if (g_forced_plane < 0 && !cd.is_plane) { best = (int)ci; break; }
+            if (g_forced_plane >= 0 && cd.is_plane && cd.plane == g_forced_plane) {
+                best = (int)ci; break;
+            }
+        }
+        assert(best >= 0);
+    } else {
     for (size_t ci = 0; ci < cands->size(); ci++) {
         PanelTopology::Candidate& cd = (*cands)[ci];
         double cost; bool reuse = false; simtime_picosec tstart = now;
+        (void)0;
         if (!cd.is_plane) {
             double ser = 0;
             for (size_t k = 0; k < cd.hop_queues.size(); k++) {
@@ -124,7 +173,9 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
         direct_cost <= g_pref_factor * best_cost) {
         best = direct_idx;
     }
+    }
     PanelTopology::Candidate* choice = &(*cands)[best];
+    (void)choice;
     simtime_picosec flow_delay = 0;
     if (choice->is_plane && g_ocs) {
         int pl = choice->plane;
@@ -145,6 +196,10 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
     }
 
     TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
+    MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+    mtcp->setName("rpm_" + ntoa(g_next_tag));
+    g_logfile->writeName(*mtcp);
+    mtcp->addSubflow(src);
     src->_debug_srcid = (int)s; src->_debug_dstid = (int)d;
     src->set_flowsize(bytes);
     uint64_t win = bytes + 2 * Packet::data_packet_size();
@@ -164,6 +219,7 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
     routein->push_back(src);
     src->connect(*routeout, *routein, *snk, g_ev->now() + flow_delay);
     src->setFlowId(g_next_tag); snk->setFlowId(g_next_tag);
+    if (g_flow_is_epoch) g_epoch_tag_plane[g_next_tag] = g_forced_plane;
     g_next_tag++;
     for (size_t k = 0; k < cands->size(); k++) delete (*cands)[k].route;
     delete cands;
@@ -177,20 +233,84 @@ static void launch_phase() {
     vector<Flow>& fl = g_layers[layer];
     g_outstanding = fl.size();
     if (g_outstanding == 0) { g_phase_end.push_back(g_ev->now()); g_phase++; launch_phase(); return; }
-    for (size_t i = 0; i < fl.size(); i++) {
-        if (combine) start_flow(fl[i].d, fl[i].s, fl[i].bytes);
-        else         start_flow(fl[i].s, fl[i].d, fl[i].bytes);
+    if (!g_compiled) {
+        for (size_t i = 0; i < fl.size(); i++) {
+            if (combine) start_flow(fl[i].d, fl[i].s, fl[i].bytes);
+            else         start_flow(fl[i].s, fl[i].d, fl[i].bytes);
+        }
+        return;
     }
+    // compiled: offset-grouped matchings. Each destination offset o is a
+    // perfect matching i -> (i+o) mod N; offload the heaviest hop-weighted
+    // offsets to the planes until plane serialization balances DOR torus
+    // load; each plane runs its own epoch chain (one offset per epoch),
+    // matchings persist for the whole epoch.
+    const uint32_t NN = 64;
+    std::vector<long double> offW(NN, 0.0L);
+    std::vector<std::vector<Flow>> offFlows(NN);
+    long double torus_hopbytes = 0;
+    for (size_t i = 0; i < fl.size(); i++) {
+        uint32_t s = combine ? fl[i].d : fl[i].s;
+        uint32_t d = combine ? fl[i].s : fl[i].d;
+        uint32_t o = (d + NN - s) % NN;
+        int h = torus_hops_replay(s, d);
+        offW[o] += (long double)h * fl[i].bytes;
+        Flow f; f.s = s; f.d = d; f.bytes = fl[i].bytes;
+        offFlows[o].push_back(f);
+        torus_hopbytes += (long double)h * fl[i].bytes;
+    }
+    std::vector<uint32_t> order;
+    for (uint32_t o = 1; o < NN; o++) if (!offFlows[o].empty()) order.push_back(o);
+    std::sort(order.begin(), order.end(),
+              [&](uint32_t a, uint32_t b) { return offW[a] > offW[b]; });
+    g_plane_epochs[0].clear(); g_plane_epochs[1].clear();
+    long double plane_sel = 0;
+    size_t k = 0;
+    for (; k < order.size(); k++) {
+        uint64_t ob = 0;
+        for (size_t j = 0; j < offFlows[order[k]].size(); j++)
+            ob += offFlows[order[k]][j].bytes;
+        long double torus_load = torus_hopbytes / (4.0L * NN);
+        long double plane_load = (plane_sel + ob) / 2.0L / NN;
+        if (plane_load >= torus_load) break;
+        plane_sel += ob;
+        torus_hopbytes -= offW[order[k]];
+        g_plane_epochs[k % 2].push_back(offFlows[order[k]]);
+    }
+    for (size_t i = k; i < order.size(); i++)
+        for (size_t j = 0; j < offFlows[order[i]].size(); j++) {
+            Flow& f = offFlows[order[i]][j];
+            start_flow_forced(f.s, f.d, f.bytes, -1);
+        }
+    for (int pl = 0; pl < 2; pl++) { g_plane_cur[pl] = 0; launch_epoch_on(pl); }
+}
+
+static void launch_epoch_on(int pl) {
+    if (g_plane_cur[pl] >= g_plane_epochs[pl].size()) return;
+    std::vector<Flow>& ef = g_plane_epochs[pl][g_plane_cur[pl]];
+    g_plane_outstanding[pl] = ef.size();
+    for (size_t i = 0; i < ef.size(); i++)
+        start_flow_forced(ef[i].s, ef[i].d, ef[i].bytes, pl);
+}
+
+
+static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane) {
+    g_forced_plane = plane;
+    g_flow_is_epoch = (plane >= 0);
+    start_flow(s, d, bytes);
+    g_flow_is_epoch = false;
+    g_forced_plane = -2;
 }
 
 int main(int argc, char** argv) {
-    string flowdir; int nlayers = 1, nodes = 64, planes = 2;
+    string flowdir, flowlist; int nlayers = 1, nodes = 64, planes = 2;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
     mem_b qsize = 90000 * 1500;
     string panel = "hybrid", policy = "directpref";
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-flowdir")) flowdir = argv[++i];
+        else if (!strcmp(argv[i], "-flowlist")) flowlist = argv[++i];
         else if (!strcmp(argv[i], "-layers")) nlayers = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-nodes")) nodes = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-panel")) panel = argv[++i];
@@ -204,6 +324,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-q")) qsize = (mem_b)atol(argv[++i]) * 1500;
         else if (!strcmp(argv[i], "-maxwin")) g_maxwin = atol(argv[++i]);
         else if (!strcmp(argv[i], "-nocombine")) g_combine = false;
+        else if (!strcmp(argv[i], "-compiled")) g_compiled = true;
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 1; }
     }
     if (plane_gibps < 0) plane_gibps = link_gibps;
@@ -229,10 +350,23 @@ int main(int argc, char** argv) {
     up_peer.assign(p, vector<int>(nodes, -1));
     down_peer.assign(p, vector<int>(nodes, -1));
 
-    for (int L = 0; L < nlayers; L++) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/dispatch_layer%d.htsim", flowdir.c_str(), L);
-        ifstream f(path);
+    vector<string> phase_files;
+    if (!flowlist.empty()) {
+        // manifest mode: each line is a flow-file path = one dispatch phase
+        // (plus its combine), in execution order -- e.g. iteration x layer
+        // chains from gen_iter_replay.py. OCS ledgers persist across phases.
+        ifstream mf(flowlist.c_str());
+        string line;
+        while (getline(mf, line)) if (!line.empty()) phase_files.push_back(line);
+    } else {
+        for (int L = 0; L < nlayers; L++) {
+            char path[512];
+            snprintf(path, sizeof(path), "%s/dispatch_layer%d.htsim", flowdir.c_str(), L);
+            phase_files.push_back(path);
+        }
+    }
+    for (size_t pi = 0; pi < phase_files.size(); pi++) {
+        ifstream f(phase_files[pi].c_str());
         vector<Flow> fl;
         if (f.good()) {
             string line;
