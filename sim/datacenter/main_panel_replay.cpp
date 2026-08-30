@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 #include <set>
+#include <utility>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -60,6 +61,80 @@ static vector<simtime_picosec> g_phase_end;
 static uint64_t g_direct_bytes = 0, g_plane_bytes = 0;
 
 static void launch_phase();
+static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane);
+
+// ---- compiled-plan mode (SPECTRA et al.) --------------------------------
+struct PlanCfg { std::vector<Flow> circ; };
+static std::vector<std::vector<PlanCfg>> plan_cfgs;   // [plane][seq]
+static std::vector<size_t> plan_cur;
+static simtime_picosec plan_reconf = 0;
+static bool plan_mode = false, plan_transposed = false;
+static uint64_t plan_reconfigs = 0;
+
+static bool plan_matching_changed(const PlanCfg& a, const PlanCfg& b) {
+    std::set<std::pair<uint32_t,uint32_t>> sa, sb;
+    for (size_t i = 0; i < a.circ.size(); i++) sa.insert({a.circ[i].s, a.circ[i].d});
+    for (size_t i = 0; i < b.circ.size(); i++) sb.insert({b.circ[i].s, b.circ[i].d});
+    return sa != sb;
+}
+
+class PlanDriver : public EventSource {
+  public:
+    PlanDriver(EventList& ev, int plane)
+        : EventSource(ev, "plandrv"), _plane(plane) {}
+    void schedule_at(simtime_picosec t) { eventlist().sourceIsPending(*this, t); }
+    virtual void doNextEvent();
+  private:
+    int _plane;
+};
+static std::vector<PlanDriver*> plan_drivers;
+
+static void plan_install(int plane) {
+    size_t ci = plan_cur[plane];
+    if (ci >= plan_cfgs[plane].size()) return;
+    PlanCfg& c = plan_cfgs[plane][ci];
+    double Bpns = 0; simtime_picosec drain = g_ev->now();
+    for (size_t i = 0; i < c.circ.size(); i++) {
+        uint32_t s = plan_transposed ? c.circ[i].d : c.circ[i].s;
+        uint32_t d = plan_transposed ? c.circ[i].s : c.circ[i].d;
+        start_flow(s, d, c.circ[i].bytes, plane);
+    }
+    // drain when the largest circuit finishes serializing on its uplink
+    uint64_t mx = 0;
+    for (size_t i = 0; i < c.circ.size(); i++) if (c.circ[i].bytes > mx) mx = c.circ[i].bytes;
+    Bpns = 200.0 * 1073741824.0 / 1e9;   // plane rate, B/ns (GiB/s convention)
+    drain = g_ev->now() + (simtime_picosec)((double)mx / Bpns * 1000.0)
+          + timeFromNs(3.0 * 1500.0 / Bpns);
+    plan_drivers[plane]->schedule_at(drain);
+}
+
+void PlanDriver::doNextEvent() {
+    size_t ci = plan_cur[_plane];
+    if (ci + 1 >= plan_cfgs[_plane].size()) return;
+    bool ch = plan_matching_changed(plan_cfgs[_plane][ci], plan_cfgs[_plane][ci + 1]);
+    plan_cur[_plane]++;
+    if (ch) { plan_reconfigs++; }
+    simtime_picosec when = eventlist().now() + (ch ? plan_reconf : 0);
+    if (when <= eventlist().now()) { plan_install(_plane); }
+    else {
+        // dark period: install after T_r
+        simtime_picosec t = when;
+        // reuse the driver: schedule install via a zero-length config trick
+        struct Inst : public EventSource {
+            int pl; Inst(EventList& ev, int p) : EventSource(ev, "inst"), pl(p) {}
+            virtual void doNextEvent() { plan_install(pl); }
+        };
+        Inst* iv = new Inst(eventlist(), _plane);
+        eventlist().sourceIsPending(*iv, t);
+    }
+}
+
+static void plan_launch_all() {
+    for (size_t p = 0; p < plan_cfgs.size(); p++) {
+        plan_cur[p] = 0;
+        if (!plan_cfgs[p].empty()) plan_install((int)p);
+    }
+}
 static void report_and_exit();
 
 // --- compiled mode (QTP-style): per phase, offload the heaviest pairs to the
@@ -99,6 +174,7 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
         }
     }
     if (--g_outstanding == 0) {
+        if (plan_mode) return;      // plan main loop owns phase transitions
         g_phase_end.push_back(g_ev->now());
         g_phase++;
         launch_phase();
@@ -109,8 +185,49 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes);
 static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane);
 
 static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
+    start_flow(s, d, bytes, -2);
+}
+static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane) {
     vector<PanelTopology::Candidate>* cands = g_top->get_candidates(s, d);
     simtime_picosec now = g_ev->now();
+    if (forced_plane >= 0) {
+        // plan mode: ride the installed circuit on this plane, no policy.
+        for (size_t ci = 0; ci < cands->size(); ci++) {
+            PanelTopology::Candidate& cd = (*cands)[ci];
+            if (cd.is_plane && cd.plane == forced_plane) {
+                g_plane_bytes += bytes;
+                TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
+                MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+                mtcp->setName("rpm_" + ntoa(g_next_tag));
+                g_logfile->writeName(*mtcp);
+                mtcp->addSubflow(src);
+                src->_debug_srcid = (int)s; src->_debug_dstid = (int)d;
+                src->set_flowsize(bytes);
+                uint64_t win = bytes + 2 * Packet::data_packet_size();
+                if (win > g_maxwin) win = g_maxwin;
+                src->set_cwnd(win); src->set_ssthresh(win);
+                TcpSink* snk = new TcpSink();
+                snk->_debug_srcid = (int)s; snk->_debug_dstid = (int)d;
+                snk->astrasim_flow_finish_recv_cb = &flow_done_cb;
+                src->setName("rp_" + ntoa(s) + "_" + ntoa(d) + "_" + ntoa(g_next_tag));
+                g_logfile->writeName(*src);
+                snk->setName("rps_" + ntoa(s) + "_" + ntoa(d) + "_" + ntoa(g_next_tag));
+                g_logfile->writeName(*snk);
+                g_rtx->registerTcp(*src);
+                Route* ro = new Route(*(cd.route)); ro->push_back(snk);
+                Route* ri = new Route(); ri->push_back(src);
+                int tag = g_next_tag++;
+                // picosecond stagger: break exact event-time ties that can
+                // wedge the event loop in same-timestamp storms
+                src->connect(*ro, *ri, *snk, g_ev->now() + (simtime_picosec)(tag % 997));
+                src->setFlowId(tag); snk->setFlowId(tag);
+                break;
+            }
+        }
+        for (size_t k = 0; k < cands->size(); k++) delete (*cands)[k].route;
+        delete cands;
+        return;
+    }
     int best = -1; double best_cost = 0; bool best_reuse = false;
     simtime_picosec best_start = now;
     int direct_idx = -1; double direct_cost = 0;
@@ -303,7 +420,7 @@ static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane)
 }
 
 int main(int argc, char** argv) {
-    string flowdir, flowlist; int nlayers = 1, nodes = 64, planes = 2;
+    string flowdir, flowlist, plan_file; int nlayers = 1, nodes = 64, planes = 2;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
     mem_b qsize = 90000 * 1500;
@@ -324,6 +441,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-q")) qsize = (mem_b)atol(argv[++i]) * 1500;
         else if (!strcmp(argv[i], "-maxwin")) g_maxwin = atol(argv[++i]);
         else if (!strcmp(argv[i], "-nocombine")) g_combine = false;
+        else if (!strcmp(argv[i], "-plan")) { plan_mode = true; plan_file = argv[++i]; }
+        else if (!strcmp(argv[i], "-planreconfNs")) plan_reconf = timeFromNs(atof(argv[++i]));
         else if (!strcmp(argv[i], "-compiled")) g_compiled = true;
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 1; }
     }
@@ -387,6 +506,61 @@ int main(int argc, char** argv) {
            g_layers.size(), g_layers.empty() ? 0 : g_layers[0].size(),
            total_flows, panel.c_str(), policy.c_str(), (int)g_ocs);
 
+    if (plan_mode) {
+        // parse flat plan program
+        ifstream pf(plan_file.c_str());
+        string tok; int nplanes_plan = 0;
+        pf >> tok >> nplanes_plan;
+        plan_cfgs.assign(nplanes_plan, std::vector<PlanCfg>());
+        plan_cur.assign(nplanes_plan, 0);
+        int curp = -1;
+        string line;
+        while (pf >> tok) {
+            if (tok == "P") { pf >> curp; plan_cfgs[curp].push_back(PlanCfg()); }
+            else if (tok == "C") {
+                long a, b2; unsigned long long by; pf >> a >> b2 >> by;
+                Flow fw; fw.s = (uint32_t)a; fw.d = (uint32_t)b2; fw.bytes = by;
+                plan_cfgs[curp].back().circ.push_back(fw);
+            }
+        }
+        size_t tot = 0;
+        for (size_t p = 0; p < plan_cfgs.size(); p++) {
+            plan_drivers.push_back(new PlanDriver(eventlist, (int)p));
+            for (size_t c2 = 0; c2 < plan_cfgs[p].size(); c2++) tot += plan_cfgs[p][c2].circ.size();
+        }
+        printf("PLAN mode: planes=%zu total_flows=%zu (x2 with combine)\n",
+               plan_cfgs.size(), tot);
+        g_outstanding = tot;
+        g_phase = 0;
+        plan_transposed = false;
+        plan_launch_all();
+        uint64_t evn = 0;
+        while (eventlist.doNextEvent()) {
+            if (eventlist.now() > timeFromSec(2)) {
+                fprintf(stderr, "SAFETY: sim exceeded 2s, terminating (out=%zu)\n", g_outstanding);
+                break;
+            }
+            if (++evn % 2000000 == 0)
+                fprintf(stderr, "HB ev=%lluM now_ns=%.0f out=%zu ph=%zu\n",
+                        (unsigned long long)(evn / 1000000),
+                        timeAsNs(eventlist.now()), g_outstanding, g_phase_end.size());
+            if (g_outstanding == 0 && g_combine && !plan_transposed) {
+                g_phase_end.push_back(eventlist.now());
+                plan_transposed = true;
+                g_outstanding = tot;
+                plan_launch_all();
+            } else if (g_outstanding == 0 && (plan_transposed || !g_combine)
+                       && g_phase_end.size() < (g_combine ? 2u : 1u)) {
+                g_phase_end.push_back(eventlist.now());
+            }
+        }
+        printf("PLAN_RESULT makespan_ns=%.0f reconfigs=%llu plane_bytes=%llu rtx=%llu\n",
+               g_phase_end.empty() ? -1.0 : timeAsNs(g_phase_end.back()),
+               (unsigned long long)plan_reconfigs,
+               (unsigned long long)g_plane_bytes,
+               (unsigned long long)TcpSrc::_global_rtx_count);
+        return 0;
+    }
     launch_phase();
     while (eventlist.doNextEvent()) {}
     report_and_exit();
