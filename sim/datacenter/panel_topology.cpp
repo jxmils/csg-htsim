@@ -1,5 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "panel_topology.h"
+#include <fstream>
+#include <iostream>
 #include "main.h"
 #include <sstream>
 #include <cassert>
@@ -13,11 +15,13 @@ PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
                              double base_gibps, simtime_picosec base_latency,
                              double plane_gibps, simtime_picosec plane_latency,
                              mem_b queuesize, Logfile* logfile, EventList* ev,
-                             const std::vector<int>& extents)
+                             const std::vector<int>& extents, bool quiet,
+                             const std::string& graphfile)
     : _n(npus), _base(base), _planes(planes), _queuesize(queuesize),
-      _logfile(logfile), _ev(ev) {
+      _logfile(logfile), _ev(ev), _quiet(quiet) {
     switch (base) {
         case Base::None:    _dims = 0; _wrap = false; break;
+        case Base::Custom:  _dims = 0; _wrap = false; _graphfile = graphfile; break;
         case Base::Ring1D:  _dims = 1; _wrap = true;  break;
         case Base::Mesh2D:  _dims = 2; _wrap = false; break;
         case Base::Torus2D: _dims = 2; _wrap = true;  break;
@@ -41,13 +45,17 @@ PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
         }
         build_base(base_gibps, base_latency);
     }
+    if (_base == Base::Custom) build_custom(base_gibps, base_latency);
     if (_planes > 0) build_planes(plane_gibps, plane_latency);
-    assert(_dims > 0 || _planes > 0);
+    assert(_dims > 0 || _planes > 0 || _base == Base::Custom);
 }
 
 LedgerQueue* PanelTopology::make_queue(double gibps, const string& name) {
-    QueueLoggerSampling* ql = new QueueLoggerSampling(timeFromUs((uint32_t)1000), *_ev);
-    _logfile->addLogger(*ql);
+    QueueLoggerSampling* ql = NULL;
+    if (!_quiet) {
+        ql = new QueueLoggerSampling(timeFromUs((uint32_t)1000), *_ev);
+        _logfile->addLogger(*ql);
+    }
     LedgerQueue* q = new LedgerQueue(speedFromGiBps(gibps), _queuesize, *_ev, ql);
     q->setName(name);
     _logfile->writeName(*q);
@@ -140,12 +148,71 @@ int PanelTopology::step_towards(int& cur, int target, bool tie_backward,
     return port;
 }
 
+void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
+    std::ifstream f(_graphfile.c_str());
+    if (!f.good()) { std::cerr << "custom graph file open failed: " << _graphfile << std::endl; abort(); }
+    _adj.assign(_n, std::vector<uint32_t>());
+    std::string tok;
+    while (f >> tok) {
+        if (tok == "E") {
+            long a, b; f >> a >> b;
+            _adj[a].push_back((uint32_t)b);
+        } else { std::string dummy; f >> dummy; }
+    }
+    _dir_q.assign(_n, std::vector<LedgerQueue*>());
+    _dir_p.assign(_n, std::vector<Pipe*>());
+    for (uint32_t u = 0; u < _n; u++) {
+        for (size_t p = 0; p < _adj[u].size(); p++) {
+            char nm[64];
+            snprintf(nm, sizeof(nm), "cq_%u_%zu", u, p);
+            _dir_q[u].push_back(make_queue(gibps, nm));
+            snprintf(nm, sizeof(nm), "cp_%u_%zu", u, p);
+            _dir_p[u].push_back(make_pipe(lat, nm));
+        }
+    }
+    // per-source BFS next-hop port table
+    _nh.assign(_n, std::vector<int>(_n, -1));
+    for (uint32_t s = 0; s < _n; s++) {
+        std::vector<int> par(_n, -1), parport(_n, -1);
+        std::vector<uint32_t> q; q.push_back(s); par[s] = (int)s;
+        for (size_t qi = 0; qi < q.size(); qi++) {
+            uint32_t u = q[qi];
+            for (size_t p = 0; p < _adj[u].size(); p++) {
+                uint32_t v = _adj[u][p];
+                if (par[v] < 0) { par[v] = (int)u; parport[v] = (int)p; q.push_back(v); }
+            }
+        }
+        for (uint32_t d = 0; d < _n; d++) {
+            if (d == s || par[d] < 0) continue;
+            uint32_t cur = d;
+            while ((uint32_t)par[cur] != s) cur = (uint32_t)par[cur];
+            _nh[s][d] = parport[cur];
+        }
+    }
+}
+
 PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t dest) {
     Candidate cand;
     cand.route = new Route();
     cand.is_plane = false; cand.plane = -1;
     cand.hops = 0; cand.latency_sum = 0;
 
+    if (_base == Base::Custom) {
+        uint32_t cur = src;
+        while (cur != dest) {
+            int port = _nh[cur][dest];
+            assert(port >= 0);
+            LedgerQueue* q = _dir_q[cur][port];
+            Pipe* p = _dir_p[cur][port];
+            cand.route->push_back(q); cand.route->push_back(p);
+            cand.hop_queues.push_back(q);
+            cand.latency_sum += p->delay();
+            cand.hops++;
+            cur = _adj[cur][port];
+        }
+        check_non_null(cand.route);
+        return cand;
+    }
     vector<int> c(_dims), t(_dims);
     for (int d = 0; d < _dims; d++) { c[d] = coord(src, d); t[d] = coord(dest, d); }
 
@@ -191,7 +258,7 @@ PanelTopology::Candidate PanelTopology::plane_candidate(uint32_t src, uint32_t d
 vector<PanelTopology::Candidate>* PanelTopology::get_candidates(uint32_t src, uint32_t dest) {
     assert(src < _n && dest < _n && src != dest);
     vector<Candidate>* out = new vector<Candidate>();
-    bool direct_ok = (_dims > 0);
+    bool direct_ok = (_dims > 0) || _base == Base::Custom;
     if (_base == Base::RingRows && coord(src, 1) != coord(dest, 1))
         direct_ok = false;   // rows are disjoint rings; cross-row is optical-only
     if (direct_ok) out->push_back(direct_candidate(src, dest));

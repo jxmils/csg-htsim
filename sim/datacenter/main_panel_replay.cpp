@@ -66,6 +66,7 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
 // ---- compiled-plan mode (SPECTRA et al.) --------------------------------
 struct PlanCfg { std::vector<Flow> circ; };
 static std::vector<std::vector<PlanCfg>> plan_cfgs;   // [plane][seq]
+static std::vector<Flow> plan_direct;                 // DIRECT share (hybrid split)
 static std::vector<size_t> plan_cur;
 static simtime_picosec plan_reconf = 0;
 static bool plan_mode = false, plan_transposed = false;
@@ -130,6 +131,11 @@ void PlanDriver::doNextEvent() {
 }
 
 static void plan_launch_all() {
+    for (size_t i = 0; i < plan_direct.size(); i++) {
+        uint32_t s = plan_transposed ? plan_direct[i].d : plan_direct[i].s;
+        uint32_t d = plan_transposed ? plan_direct[i].s : plan_direct[i].d;
+        start_flow(s, d, plan_direct[i].bytes, -1);
+    }
     for (size_t p = 0; p < plan_cfgs.size(); p++) {
         plan_cur[p] = 0;
         if (!plan_cfgs[p].empty()) plan_install((int)p);
@@ -190,6 +196,42 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
 static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane) {
     vector<PanelTopology::Candidate>* cands = g_top->get_candidates(s, d);
     simtime_picosec now = g_ev->now();
+    if (forced_plane == -1) {
+        // hybrid-split DIRECT share: dimension-order torus route, no policy
+        for (size_t ci = 0; ci < cands->size(); ci++) {
+            PanelTopology::Candidate& cd = (*cands)[ci];
+            if (cd.is_plane) continue;
+            for (size_t k = 0; k < cd.hop_queues.size(); k++)
+                cd.hop_queues[k]->reserve_bytes(bytes);
+            g_direct_bytes += bytes;
+            TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
+            MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+            mtcp->setName("rpm_" + ntoa(g_next_tag)); g_logfile->writeName(*mtcp);
+            mtcp->addSubflow(src);
+            src->_debug_srcid = (int)s; src->_debug_dstid = (int)d;
+            src->set_flowsize(bytes);
+            uint64_t win = bytes + 2 * Packet::data_packet_size();
+            if (win > g_maxwin) win = g_maxwin;
+            src->set_cwnd(win); src->set_ssthresh(win);
+            TcpSink* snk = new TcpSink();
+            snk->_debug_srcid = (int)s; snk->_debug_dstid = (int)d;
+            snk->astrasim_flow_finish_recv_cb = &flow_done_cb;
+            src->setName("rp_" + ntoa(s) + "_" + ntoa(d) + "_" + ntoa(g_next_tag));
+            g_logfile->writeName(*src);
+            snk->setName("rps_" + ntoa(s) + "_" + ntoa(d) + "_" + ntoa(g_next_tag));
+            g_logfile->writeName(*snk);
+            g_rtx->registerTcp(*src);
+            Route* ro = new Route(*(cd.route)); ro->push_back(snk);
+            Route* ri = new Route(); ri->push_back(src);
+            int tag = g_next_tag++;
+            src->connect(*ro, *ri, *snk, g_ev->now() + (simtime_picosec)(tag % 997));
+            src->setFlowId(tag); snk->setFlowId(tag);
+            break;
+        }
+        for (size_t k = 0; k < cands->size(); k++) delete (*cands)[k].route;
+        delete cands;
+        return;
+    }
     if (forced_plane >= 0) {
         // plan mode: ride the installed circuit on this plane, no policy.
         for (size_t ci = 0; ci < cands->size(); ci++) {
@@ -420,7 +462,7 @@ static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane)
 }
 
 int main(int argc, char** argv) {
-    string flowdir, flowlist, plan_file; int nlayers = 1, nodes = 64, planes = 2;
+    string flowdir, flowlist, plan_file, graphfile; int nlayers = 1, nodes = 64, planes = 2;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
     mem_b qsize = 90000 * 1500;
@@ -441,6 +483,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-q")) qsize = (mem_b)atol(argv[++i]) * 1500;
         else if (!strcmp(argv[i], "-maxwin")) g_maxwin = atol(argv[++i]);
         else if (!strcmp(argv[i], "-nocombine")) g_combine = false;
+        else if (!strcmp(argv[i], "-graphfile")) graphfile = argv[++i];
         else if (!strcmp(argv[i], "-plan")) { plan_mode = true; plan_file = argv[++i]; }
         else if (!strcmp(argv[i], "-planreconfNs")) plan_reconf = timeFromNs(atof(argv[++i]));
         else if (!strcmp(argv[i], "-compiled")) g_compiled = true;
@@ -455,15 +498,19 @@ int main(int argc, char** argv) {
     Logfile lf("replay_logout.dat", eventlist); g_logfile = &lf;
     TcpRtxTimerScanner rtx(timeFromMs(250), eventlist); g_rtx = &rtx;
 
+    if (!graphfile.empty()) panel = "custom";
     PanelTopology::Base base =
         (panel == "torus3d") ? PanelTopology::Base::Torus3D :
         (panel == "mesh3d")  ? PanelTopology::Base::Mesh3D :
         (panel == "fullswitch") ? PanelTopology::Base::None :
+        (panel == "custom") ? PanelTopology::Base::Custom :
         PanelTopology::Base::Torus2D;
-    int p = (panel == "fullswitch") ? 6 :
+    int p = (panel == "custom") ? 0 :
+            (panel == "fullswitch") ? 6 :
             (panel == "torus3d" || panel == "mesh3d") ? 0 : planes;
     g_top = new PanelTopology(nodes, base, p, link_gibps, lat,
-                              plane_gibps, lat, qsize, &lf, &eventlist);
+                              plane_gibps, lat, qsize, &lf, &eventlist,
+                              std::vector<int>(), false, graphfile);
     up_free.assign(p, vector<simtime_picosec>(nodes, 0));
     down_free.assign(p, vector<simtime_picosec>(nodes, 0));
     up_peer.assign(p, vector<int>(nodes, -1));
@@ -517,13 +564,18 @@ int main(int argc, char** argv) {
         string line;
         while (pf >> tok) {
             if (tok == "P") { pf >> curp; plan_cfgs[curp].push_back(PlanCfg()); }
+            else if (tok == "D") {
+                long a, b2; unsigned long long by; pf >> a >> b2 >> by;
+                Flow fw; fw.s = (uint32_t)a; fw.d = (uint32_t)b2; fw.bytes = by;
+                plan_direct.push_back(fw);
+            }
             else if (tok == "C") {
                 long a, b2; unsigned long long by; pf >> a >> b2 >> by;
                 Flow fw; fw.s = (uint32_t)a; fw.d = (uint32_t)b2; fw.bytes = by;
                 plan_cfgs[curp].back().circ.push_back(fw);
             }
         }
-        size_t tot = 0;
+        size_t tot = plan_direct.size();
         for (size_t p = 0; p < plan_cfgs.size(); p++) {
             plan_drivers.push_back(new PlanDriver(eventlist, (int)p));
             for (size_t c2 = 0; c2 < plan_cfgs[p].size(); c2++) tot += plan_cfgs[p][c2].circ.size();

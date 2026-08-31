@@ -60,7 +60,7 @@ class LedgerQueue : public Queue {
 
 class PanelTopology : public Topology {
   public:
-    enum class Base { None, Ring1D, Mesh2D, Torus2D, Mesh3D, Torus3D, RingRows };
+    enum class Base { None, Ring1D, Mesh2D, Torus2D, Mesh3D, Torus3D, Custom, RingRows };
 
     // One route candidate, with the metadata the frontend's cost function and
     // telemetry need. hop_queues are the LedgerQueues along the path in order.
@@ -78,7 +78,9 @@ class PanelTopology : public Topology {
                   double base_gibps, simtime_picosec base_latency,
                   double plane_gibps, simtime_picosec plane_latency,
                   mem_b queuesize, Logfile* logfile, EventList* ev,
-                  const std::vector<int>& extents = std::vector<int>());
+                  const std::vector<int>& extents = std::vector<int>(),
+                  bool quiet = false,
+                  const std::string& graphfile = "");
 
     // Topology interface. Returns the candidate Routes (copies of route
     // structure, same queue objects): direct first (if a base fabric exists),
@@ -105,6 +107,7 @@ class PanelTopology : public Topology {
     mem_b _queuesize;
     Logfile* _logfile;
     EventList* _ev;
+    bool _quiet;   // suppress per-queue sampling loggers (large-N runs)
 
     // Direct fabric: per node, per port (2*dim + sign; sign 0 = +, 1 = -).
     std::vector<std::vector<LedgerQueue*>> _dir_q;
@@ -114,6 +117,13 @@ class PanelTopology : public Topology {
     std::vector<std::vector<Pipe*>> _up_p;
     std::vector<std::vector<LedgerQueue*>> _down_q;
     std::vector<std::vector<Pipe*>> _down_p;
+
+    // Custom base: arbitrary directed graph from file ("E src dst" lines),
+    // BFS shortest-path next-hop routing.
+    std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
+    std::vector<std::vector<int>> _nh;            // [src][dst] -> out-port (-1 none)
+    std::string _graphfile;
+    void build_custom(double gibps, simtime_picosec lat);
 
     int coord(uint32_t id, int dim) const;
     uint32_t id_of(const std::vector<int>& c) const;
