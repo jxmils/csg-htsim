@@ -78,6 +78,12 @@ static size_t dep_done = 0;
 static std::vector<size_t> plan_cur;
 static simtime_picosec plan_reconf = 0;
 static bool plan_mode = false, plan_transposed = false;
+// combined end-to-end mode: dep-DAG (torus half) and plan (plane half) share
+// one EventList; separate outstanding counters keep the plan's combine
+// transpose independent of tree-flow completion.
+static bool combo_mode = false;
+static size_t g_dep_out = 0, g_plan_out = 0;
+static simtime_picosec g_dep_end = 0, g_plan_end = 0;
 static uint64_t plan_reconfigs = 0;
 
 static bool plan_matching_changed(const PlanCfg& a, const PlanCfg& b) {
@@ -199,6 +205,14 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
             }
         }
         dep_done++;
+    }
+    if (combo_mode) {
+        if (tag >= 1 && tag <= (int)dep_flows.size()) {
+            if (g_dep_out > 0 && --g_dep_out == 0) g_dep_end = g_ev->now();
+        } else {
+            if (g_plan_out > 0 && --g_plan_out == 0) g_plan_end = g_ev->now();
+        }
+        return;
     }
     if (--g_outstanding == 0) {
         if (plan_mode) return;      // plan main loop owns phase transitions
@@ -599,12 +613,14 @@ int main(int argc, char** argv) {
             }
         }
         g_outstanding = dep_flows.size();
+        g_dep_out = dep_flows.size();
         g_next_tag = (int)dep_flows.size() + 10;
-        printf("DEP mode: flows=%zu\n", dep_flows.size());
+        printf("DEP mode: flows=%zu combo=%d\n", dep_flows.size(), (int)(dep_mode && plan_mode));
         for (size_t i = 0; i < dep_flows.size(); i++)
             if (dep_remaining[i] == 0)
                 start_flow(dep_flows[i].s, dep_flows[i].d, dep_flows[i].bytes, -3 - (int)i);
         uint64_t evn = 0;
+        if (plan_mode) goto plan_setup;   // combined: fall through to plan
         while (eventlist.doNextEvent()) {
             if (g_outstanding == 0) { g_phase_end.push_back(eventlist.now()); break; }
             if (eventlist.now() > timeFromSec(2)) {
@@ -621,7 +637,9 @@ int main(int argc, char** argv) {
                (unsigned long long)TcpSrc::_global_rtx_count);
         return 0;
     }
+    plan_setup:
     if (plan_mode) {
+        combo_mode = dep_mode;
         // parse flat plan program
         ifstream pf(plan_file.c_str());
         string tok; int nplanes_plan = 0;
@@ -651,9 +669,38 @@ int main(int argc, char** argv) {
         printf("PLAN mode: planes=%zu total_flows=%zu (x2 with combine)\n",
                plan_cfgs.size(), tot);
         g_outstanding = tot;
+        g_plan_out = tot;
         g_phase = 0;
         plan_transposed = false;
         plan_launch_all();
+        if (combo_mode) {
+            uint64_t evn2 = 0;
+            while (eventlist.doNextEvent()) {
+                if (eventlist.now() > timeFromSec(2)) {
+                    fprintf(stderr, "SAFETY combo: dep=%zu plan=%zu\n", g_dep_out, g_plan_out);
+                    break;
+                }
+                if (++evn2 % 50000000 == 0)
+                    fprintf(stderr, "HB combo now_ns=%.0f dep=%zu plan=%zu\n",
+                            timeAsNs(eventlist.now()), g_dep_out, g_plan_out);
+                if (g_plan_out == 0 && g_combine && !plan_transposed) {
+                    plan_transposed = true;
+                    g_plan_out = tot;
+                    plan_launch_all();
+                }
+                if (g_plan_out == 0 && (plan_transposed || !g_combine) && g_dep_out == 0)
+                    break;
+            }
+            double mk = timeAsNs(g_dep_end > g_plan_end ? g_dep_end : g_plan_end);
+            printf("COMBO_RESULT makespan_ns=%.0f dep_ns=%.0f plan_ns=%.0f "
+                   "reconfigs=%llu direct_bytes=%llu plane_bytes=%llu rtx=%llu\n",
+                   mk, timeAsNs(g_dep_end), timeAsNs(g_plan_end),
+                   (unsigned long long)plan_reconfigs,
+                   (unsigned long long)g_direct_bytes,
+                   (unsigned long long)g_plane_bytes,
+                   (unsigned long long)TcpSrc::_global_rtx_count);
+            return 0;
+        }
         uint64_t evn = 0;
         while (eventlist.doNextEvent()) {
             if (eventlist.now() > timeFromSec(2)) {
