@@ -67,6 +67,14 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
 struct PlanCfg { std::vector<Flow> circ; };
 static std::vector<std::vector<PlanCfg>> plan_cfgs;   // [plane][seq]
 static std::vector<Flow> plan_direct;                 // DIRECT share (hybrid split)
+
+// ---- dependency-flow mode (ForestColl trees etc.) -----------------------
+struct DepFlow { uint32_t s, d; uint64_t bytes; int ndeps; };
+static std::vector<DepFlow> dep_flows;                 // indexed by file id
+static std::vector<std::vector<int>> dep_children;    // id -> dependents
+static std::vector<int> dep_remaining;                // unmet prerequisite count
+static bool dep_mode = false;
+static size_t dep_done = 0;
 static std::vector<size_t> plan_cur;
 static simtime_picosec plan_reconf = 0;
 static bool plan_mode = false, plan_transposed = false;
@@ -179,6 +187,19 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
             }
         }
     }
+    if (dep_mode) {
+        int fid = tag - 1;
+        if (fid >= 0 && fid < (int)dep_children.size()) {
+            for (size_t i = 0; i < dep_children[fid].size(); i++) {
+                int c = dep_children[fid][i];
+                if (--dep_remaining[c] == 0) {
+                    DepFlow& f = dep_flows[c];
+                    start_flow(f.s, f.d, f.bytes, -3 - c);   // encode file id
+                }
+            }
+        }
+        dep_done++;
+    }
     if (--g_outstanding == 0) {
         if (plan_mode) return;      // plan main loop owns phase transitions
         g_phase_end.push_back(g_ev->now());
@@ -196,6 +217,8 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes) {
 static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane) {
     vector<PanelTopology::Candidate>* cands = g_top->get_candidates(s, d);
     simtime_picosec now = g_ev->now();
+    int dep_fid = (forced_plane <= -3) ? (-3 - forced_plane) : -1;
+    if (forced_plane <= -3) forced_plane = -1;   // dep flows ride the direct fabric
     if (forced_plane == -1) {
         // hybrid-split DIRECT share: dimension-order torus route, no policy
         for (size_t ci = 0; ci < cands->size(); ci++) {
@@ -223,7 +246,7 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
             g_rtx->registerTcp(*src);
             Route* ro = new Route(*(cd.route)); ro->push_back(snk);
             Route* ri = new Route(); ri->push_back(src);
-            int tag = g_next_tag++;
+            int tag = (dep_fid >= 0) ? (dep_fid + 1) : g_next_tag++;
             src->connect(*ro, *ri, *snk, g_ev->now() + (simtime_picosec)(tag % 997));
             src->setFlowId(tag); snk->setFlowId(tag);
             break;
@@ -462,7 +485,7 @@ static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane)
 }
 
 int main(int argc, char** argv) {
-    string flowdir, flowlist, plan_file, graphfile; int nlayers = 1, nodes = 64, planes = 2;
+    string flowdir, flowlist, plan_file, graphfile, depfile; int nlayers = 1, nodes = 64, planes = 2;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
     mem_b qsize = 90000 * 1500;
@@ -484,6 +507,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-maxwin")) g_maxwin = atol(argv[++i]);
         else if (!strcmp(argv[i], "-nocombine")) g_combine = false;
         else if (!strcmp(argv[i], "-graphfile")) graphfile = argv[++i];
+        else if (!strcmp(argv[i], "-depfile")) { dep_mode = true; depfile = argv[++i]; }
         else if (!strcmp(argv[i], "-plan")) { plan_mode = true; plan_file = argv[++i]; }
         else if (!strcmp(argv[i], "-planreconfNs")) plan_reconf = timeFromNs(atof(argv[++i]));
         else if (!strcmp(argv[i], "-compiled")) g_compiled = true;
@@ -553,6 +577,50 @@ int main(int argc, char** argv) {
            g_layers.size(), g_layers.empty() ? 0 : g_layers[0].size(),
            total_flows, panel.c_str(), policy.c_str(), (int)g_ocs);
 
+    if (dep_mode) {
+        ifstream df(depfile.c_str());
+        string tok;
+        while (df >> tok) {
+            if (tok != "F") { string skip; getline(df, skip); continue; }
+            long id, a, b; unsigned long long by; int nd;
+            df >> id >> a >> b >> by >> nd;
+            if ((long)dep_flows.size() <= id) {
+                dep_flows.resize(id + 1);
+                dep_children.resize(id + 1);
+                dep_remaining.resize(id + 1, 0);
+            }
+            dep_flows[id].s = (uint32_t)a; dep_flows[id].d = (uint32_t)b;
+            dep_flows[id].bytes = by; dep_flows[id].ndeps = nd;
+            dep_remaining[id] = nd;
+            for (int q2 = 0; q2 < nd; q2++) {
+                long dd; df >> dd;
+                if ((long)dep_children.size() <= dd) dep_children.resize(dd + 1);
+                dep_children[dd].push_back((int)id);
+            }
+        }
+        g_outstanding = dep_flows.size();
+        g_next_tag = (int)dep_flows.size() + 10;
+        printf("DEP mode: flows=%zu\n", dep_flows.size());
+        for (size_t i = 0; i < dep_flows.size(); i++)
+            if (dep_remaining[i] == 0)
+                start_flow(dep_flows[i].s, dep_flows[i].d, dep_flows[i].bytes, -3 - (int)i);
+        uint64_t evn = 0;
+        while (eventlist.doNextEvent()) {
+            if (g_outstanding == 0) { g_phase_end.push_back(eventlist.now()); break; }
+            if (eventlist.now() > timeFromSec(2)) {
+                fprintf(stderr, "SAFETY dep: out=%zu done=%zu\n", g_outstanding, dep_done);
+                break;
+            }
+            if (++evn % 50000000 == 0)
+                fprintf(stderr, "HB dep now_ns=%.0f out=%zu\n",
+                        timeAsNs(eventlist.now()), g_outstanding);
+        }
+        printf("DEP_RESULT makespan_ns=%.0f flows=%zu direct_bytes=%llu rtx=%llu\n",
+               g_phase_end.empty() ? -1.0 : timeAsNs(g_phase_end.back()),
+               dep_flows.size(), (unsigned long long)g_direct_bytes,
+               (unsigned long long)TcpSrc::_global_rtx_count);
+        return 0;
+    }
     if (plan_mode) {
         // parse flat plan program
         ifstream pf(plan_file.c_str());
