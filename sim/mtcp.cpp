@@ -28,7 +28,7 @@ MultipathTcpSrc::MultipathTcpSrc(char cc_type,EventList& ev,MultipathTcpLogger* 
     for (int j=0;j<4;j++)
         _last_reduce[j] = 0;
 #endif
-    eventlist().sourceIsPending(*this,timeFromSec(3));
+    eventlist().sourceIsPendingRel(*this, timeFromSec(3));
     _nodename = "mtcpsrc";
 }
 
