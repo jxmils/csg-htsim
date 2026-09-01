@@ -151,17 +151,27 @@ int PanelTopology::step_towards(int& cur, int target, bool tie_backward,
 void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     std::ifstream f(_graphfile.c_str());
     if (!f.good()) { std::cerr << "custom graph file open failed: " << _graphfile << std::endl; abort(); }
-    _adj.assign(_n, std::vector<uint32_t>());
+    // Two passes: the graph may carry non-endpoint devices (HammingMesh row and
+    // column switches) whose ids run past the endpoint count, so size to the
+    // highest id present rather than to _n.
+    std::vector<std::pair<long,long>> edges;
+    long maxid = (long)_n - 1;
     std::string tok;
     while (f >> tok) {
         if (tok == "E") {
             long a, b; f >> a >> b;
-            _adj[a].push_back((uint32_t)b);
-        } else { std::string dummy; f >> dummy; }
+            edges.push_back(std::make_pair(a, b));
+            if (a > maxid) maxid = a;
+            if (b > maxid) maxid = b;
+        } else { std::string rest; std::getline(f, rest); }
     }
-    _dir_q.assign(_n, std::vector<LedgerQueue*>());
-    _dir_p.assign(_n, std::vector<Pipe*>());
-    for (uint32_t u = 0; u < _n; u++) {
+    _ndev = (uint32_t)(maxid + 1);
+    _adj.assign(_ndev, std::vector<uint32_t>());
+    for (size_t i = 0; i < edges.size(); i++)
+        _adj[edges[i].first].push_back((uint32_t)edges[i].second);
+    _dir_q.assign(_ndev, std::vector<LedgerQueue*>());
+    _dir_p.assign(_ndev, std::vector<Pipe*>());
+    for (uint32_t u = 0; u < _ndev; u++) {
         for (size_t p = 0; p < _adj[u].size(); p++) {
             char nm[64];
             snprintf(nm, sizeof(nm), "cq_%u_%zu", u, p);
@@ -171,9 +181,9 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
         }
     }
     // per-source BFS next-hop port table
-    _nh.assign(_n, std::vector<int>(_n, -1));
-    for (uint32_t s = 0; s < _n; s++) {
-        std::vector<int> par(_n, -1), parport(_n, -1);
+    _nh.assign(_ndev, std::vector<int>(_ndev, -1));
+    for (uint32_t s = 0; s < _ndev; s++) {
+        std::vector<int> par(_ndev, -1), parport(_ndev, -1);
         std::vector<uint32_t> q; q.push_back(s); par[s] = (int)s;
         for (size_t qi = 0; qi < q.size(); qi++) {
             uint32_t u = q[qi];
@@ -182,7 +192,7 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
                 if (par[v] < 0) { par[v] = (int)u; parport[v] = (int)p; q.push_back(v); }
             }
         }
-        for (uint32_t d = 0; d < _n; d++) {
+        for (uint32_t d = 0; d < _ndev; d++) {
             if (d == s || par[d] < 0) continue;
             uint32_t cur = d;
             while ((uint32_t)par[cur] != s) cur = (uint32_t)par[cur];

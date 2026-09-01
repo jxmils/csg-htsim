@@ -98,7 +98,8 @@ class PanelTopology : public Topology {
     bool has_base() const { return _base != Base::None; }
 
   private:
-    uint32_t _n;
+    uint32_t _n;          // endpoints (ranks visible to ASTRA)
+    uint32_t _ndev = 0;   // physical devices incl. switches (Custom)
     Base _base;
     int _dims;            // 2 or 3 (0 when Base::None)
     std::vector<int> _extents;   // per-dimension extents
