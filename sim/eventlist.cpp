@@ -63,9 +63,15 @@ EventList::doNextEvent()
 }
 
 
-void 
-EventList::sourceIsPending(EventSource &src, simtime_picosec when) 
+void
+EventList::sourceIsPending(EventSource &src, simtime_picosec when)
 {
+    if (when < now()) {
+        fprintf(stderr, "PAST_EVENT source=%s when=%llu now=%llu delta=%llu\n",
+                src.str().c_str(), (unsigned long long)when,
+                (unsigned long long)now(),
+                (unsigned long long)(now() - when));
+    }
     assert(when>=now());
     if (_endtime==0 || when<_endtime)
         _pendingsources.insert(make_pair(when,&src));
