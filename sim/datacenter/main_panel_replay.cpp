@@ -704,7 +704,7 @@ int main(int argc, char** argv) {
         if (combo_mode) {
             uint64_t evn2 = 0;
             while (eventlist.doNextEvent()) {
-                if (eventlist.now() > timeFromSec(2)) {
+                if (eventlist.now() > timeFromSec(60)) {
                     fprintf(stderr, "SAFETY combo: dep=%zu plan=%zu\n", g_dep_out, g_plan_out);
                     break;
                 }
@@ -731,8 +731,8 @@ int main(int argc, char** argv) {
         }
         uint64_t evn = 0;
         while (eventlist.doNextEvent()) {
-            if (eventlist.now() > timeFromSec(2)) {
-                fprintf(stderr, "SAFETY: sim exceeded 2s, terminating (out=%zu)\n", g_outstanding);
+            if (eventlist.now() > timeFromSec(60)) {
+                fprintf(stderr, "SAFETY: sim exceeded 60s, terminating (out=%zu)\n", g_outstanding);
                 break;
             }
             if (++evn % 2000000 == 0)
@@ -747,6 +747,7 @@ int main(int argc, char** argv) {
             } else if (g_outstanding == 0 && (plan_transposed || !g_combine)
                        && g_phase_end.size() < (g_combine ? 2u : 1u)) {
                 g_phase_end.push_back(eventlist.now());
+                break;
             }
         }
         printf("PLAN_RESULT makespan_ns=%.0f reconfigs=%llu direct_bytes=%llu "
