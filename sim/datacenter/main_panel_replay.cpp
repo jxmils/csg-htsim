@@ -82,6 +82,11 @@ static bool plan_mode = false, plan_transposed = false;
 // one EventList; separate outstanding counters keep the plan's combine
 // transpose independent of tree-flow completion.
 static bool combo_mode = false;
+// cross-plane gates: plan_gates[plane][cfg] = list of (dep_plane, dep_cfg);
+// a config may install only when every dep plane has DRAINED past dep_cfg.
+static std::vector<std::map<int, std::vector<std::pair<int,int>>>> plan_gates;
+static bool gates_ok(int pl, int cfg);
+static void retry_gated_planes();
 static size_t g_dep_out = 0, g_plan_out = 0;
 static simtime_picosec g_dep_end = 0, g_plan_end = 0;
 static uint64_t plan_reconfigs = 0;
@@ -190,6 +195,7 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
             g_epoch_tag_plane.erase(it);
             if (--g_plane_outstanding[pl] == 0) {
                 g_plane_cur[pl]++; launch_epoch_on(pl);
+                retry_gated_planes();
             }
         }
     }
@@ -220,6 +226,22 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
         g_phase++;
         launch_phase();
     }
+}
+
+static bool gates_ok(int pl, int cfg) {
+    if ((size_t)pl >= plan_gates.size()) return true;
+    auto it = plan_gates[pl].find(cfg);
+    if (it == plan_gates[pl].end()) return true;
+    for (size_t i = 0; i < it->second.size(); i++) {
+        int dp = it->second[i].first, dc = it->second[i].second;
+        if ((size_t)dp < plan_cur.size() && (int)plan_cur[dp] <= dc) return false;
+    }
+    return true;
+}
+static void retry_gated_planes() {
+    for (size_t p = 0; p < plan_cur.size(); p++)
+        if (g_plane_outstanding[p] == 0 && plan_cur[p] < plan_cfgs[p].size())
+            launch_epoch_on((int)p);
 }
 
 static void start_flow(uint32_t s, uint32_t d, uint64_t bytes);
@@ -482,6 +504,7 @@ static void launch_phase() {
 }
 
 static void launch_epoch_on(int pl) {
+    if (!gates_ok(pl, (int)plan_cur[pl])) return;   // re-tried on epoch completion
     if (g_plane_cur[pl] >= g_plane_epochs[pl].size()) return;
     std::vector<Flow>& ef = g_plane_epochs[pl][g_plane_cur[pl]];
     g_plane_outstanding[pl] = ef.size();
@@ -654,6 +677,11 @@ int main(int argc, char** argv) {
                 long a, b2; unsigned long long by; pf >> a >> b2 >> by;
                 Flow fw; fw.s = (uint32_t)a; fw.d = (uint32_t)b2; fw.bytes = by;
                 plan_direct.push_back(fw);
+            }
+            else if (tok == "G") {
+                int gp, gc, dp2, dc2; pf >> gp >> gc >> dp2 >> dc2;
+                if ((size_t)gp >= plan_gates.size()) plan_gates.resize(gp + 1);
+                plan_gates[gp][gc].push_back(std::make_pair(dp2, dc2));
             }
             else if (tok == "C") {
                 long a, b2; unsigned long long by; pf >> a >> b2 >> by;
