@@ -37,7 +37,8 @@ class MultipathTcpSink;
 
 class MultipathTcpSrc : public PacketSink, public EventSource {
 public:
-    MultipathTcpSrc(char cc_type,EventList & ev,MultipathTcpLogger* logger,int rwnd = 1000);
+    MultipathTcpSrc(char cc_type, EventList& ev, MultipathTcpLogger* logger,
+                    int rwnd = 1000, bool schedule_watchdog = true);
     void addSubflow(TcpSrc* tcp);
     void receivePacket(Packet& pkt);
   

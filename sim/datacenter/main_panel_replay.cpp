@@ -264,7 +264,8 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
                 cd.hop_queues[k]->reserve_bytes(bytes);
             g_direct_bytes += bytes;
             TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
-            MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+            MultipathTcpSrc* mtcp = new MultipathTcpSrc(
+                UNCOUPLED, *g_ev, NULL, 1000, false);
             mtcp->setName("rpm_" + ntoa(g_next_tag)); g_logfile->writeName(*mtcp);
             mtcp->addSubflow(src);
             src->_debug_srcid = (int)s; src->_debug_dstid = (int)d;
@@ -298,7 +299,8 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
             if (cd.is_plane && cd.plane == forced_plane) {
                 g_plane_bytes += bytes;
                 TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
-                MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+                MultipathTcpSrc* mtcp = new MultipathTcpSrc(
+                    UNCOUPLED, *g_ev, NULL, 1000, false);
                 mtcp->setName("rpm_" + ntoa(g_next_tag));
                 g_logfile->writeName(*mtcp);
                 mtcp->addSubflow(src);
@@ -414,7 +416,8 @@ static void start_flow(uint32_t s, uint32_t d, uint64_t bytes, int forced_plane)
     }
 
     TcpSrc* src = new TcpSrc(NULL, NULL, *g_ev);
-    MultipathTcpSrc* mtcp = new MultipathTcpSrc(UNCOUPLED, *g_ev, NULL);
+    MultipathTcpSrc* mtcp = new MultipathTcpSrc(
+        UNCOUPLED, *g_ev, NULL, 1000, false);
     mtcp->setName("rpm_" + ntoa(g_next_tag));
     g_logfile->writeName(*mtcp);
     mtcp->addSubflow(src);

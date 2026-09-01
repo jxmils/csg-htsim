@@ -9,7 +9,9 @@
 #define ABS(x) ((x)>=0?(x):-(x))
 #define A_SCALE 512
 
-MultipathTcpSrc::MultipathTcpSrc(char cc_type,EventList& ev,MultipathTcpLogger* logger, int rwnd):
+MultipathTcpSrc::MultipathTcpSrc(char cc_type, EventList& ev,
+                                 MultipathTcpLogger* logger, int rwnd,
+                                 bool schedule_watchdog):
     EventSource(ev,"MTCP"),_alfa(1),_logger(logger), _e(1)
 {
     _cc_type = cc_type;
@@ -28,7 +30,8 @@ MultipathTcpSrc::MultipathTcpSrc(char cc_type,EventList& ev,MultipathTcpLogger* 
     for (int j=0;j<4;j++)
         _last_reduce[j] = 0;
 #endif
-    eventlist().sourceIsPendingRel(*this, timeFromSec(3));
+    if (schedule_watchdog)
+        eventlist().sourceIsPendingRel(*this, timeFromSec(3));
     _nodename = "mtcpsrc";
 }
 
