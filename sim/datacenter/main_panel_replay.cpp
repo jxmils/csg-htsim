@@ -749,9 +749,11 @@ int main(int argc, char** argv) {
                 g_phase_end.push_back(eventlist.now());
             }
         }
-        printf("PLAN_RESULT makespan_ns=%.0f reconfigs=%llu plane_bytes=%llu rtx=%llu\n",
+        printf("PLAN_RESULT makespan_ns=%.0f reconfigs=%llu direct_bytes=%llu "
+               "plane_bytes=%llu rtx=%llu\n",
                g_phase_end.empty() ? -1.0 : timeAsNs(g_phase_end.back()),
                (unsigned long long)plan_reconfigs,
+               (unsigned long long)g_direct_bytes,
                (unsigned long long)g_plane_bytes,
                (unsigned long long)TcpSrc::_global_rtx_count);
         return 0;
