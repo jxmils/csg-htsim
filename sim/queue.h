@@ -50,8 +50,21 @@ class BaseQueue  : public EventSource, public PacketSink, public Drawable {
     virtual mem_b queuesize() const = 0;
     virtual mem_b maxsize() const = 0;
     
-    inline simtime_picosec drainTime(Packet *pkt) { 
-            return (simtime_picosec)(pkt->size() * _ps_per_byte); 
+    // Quantize ONCE, for the whole packet, rounding up. Rounding per byte
+    // first is what produced physically impossible link rates.
+    inline simtime_picosec serializationTime(mem_b bytes) const {
+        if (_bitrate == 0 || bytes <= 0) return 0;
+        // 128-bit product: bytes * 8e12 overflows uint64 above ~2.3 MiB.
+        // Packets are far smaller, but the whole reason this function exists
+        // is that a silent arithmetic assumption produced impossible link
+        // rates, so do not leave another one in place.
+        const unsigned __int128 num =
+            (unsigned __int128)(uint64_t)bytes * 8ULL * 1000000000000ULL;
+        return (simtime_picosec)((num + _bitrate - 1) / _bitrate);
+    }
+
+    inline simtime_picosec drainTime(Packet *pkt) {
+            return serializationTime((mem_b)pkt->size());
     }
 
     inline mem_b serviceCapacity(simtime_picosec t) { 
@@ -71,7 +84,11 @@ protected:
     PacketSink* _next_sink; // used in generic topology for linkage
     QueueLogger* _logger;
     linkspeed_bps _bitrate; 
-    simtime_picosec _ps_per_byte;  // service time, in picoseconds per byte
+    // Kept as a double: rounding service time per BYTE loses up to 100% of
+    // it (zero above ~931.32 GiB/s). Packet serialization is computed
+    // exactly by serializationTime(); this value is only used for the
+    // queueing-delay estimators below.
+    double _ps_per_byte;  // service time, in picoseconds per byte
     string _nodename;
     
     CircularBuffer<simtime_picosec> _busystart;

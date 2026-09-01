@@ -10,7 +10,7 @@ simtime_picosec BaseQueue::_update_period = timeFromUs(0.1);
 // base queue is a generic queue that we can log, but doesn't actually store anything
 BaseQueue::BaseQueue(linkspeed_bps bitrate, EventList& eventlist, QueueLogger* logger)
     : EventSource(eventlist, "Queue"), _logger(logger), _bitrate(bitrate), _switch(NULL) {
-    _ps_per_byte = (simtime_picosec)((pow(10.0, 12.0) * 8) / _bitrate);
+    _ps_per_byte = (pow(10.0, 12.0) * 8) / (double)_bitrate;   // no truncation
     _window = timeFromUs(30.0);
     _busy = 0;
 
@@ -204,7 +204,7 @@ Queue::queuesize() const {
 
 simtime_picosec
 Queue::serviceTime() {
-    return _queuesize * _ps_per_byte;
+    return (simtime_picosec)(_queuesize * _ps_per_byte);
 }
 
 PriorityQueue::PriorityQueue(linkspeed_bps bitrate, mem_b maxsize, 
@@ -241,13 +241,13 @@ PriorityQueue::serviceTime(Packet& pkt) {
     switch (prio) {
     case Q_LO:
         //cout << "q_lo: " << _queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO] << " ";
-        return (_queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO]) * _ps_per_byte;
+        return (simtime_picosec)((_queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO]) * _ps_per_byte);
     case Q_MID:
         //cout << "q_mid: " << _queuesize[Q_MID] + _queuesize[Q_LO] << " ";
-        return (_queuesize[Q_HI] + _queuesize[Q_MID]) * _ps_per_byte;
+        return (simtime_picosec)((_queuesize[Q_HI] + _queuesize[Q_MID]) * _ps_per_byte);
     case Q_HI:
         //cout << "q_hi: " << _queuesize[Q_LO] << " ";
-        return _queuesize[Q_HI] * _ps_per_byte;
+        return (simtime_picosec)(_queuesize[Q_HI] * _ps_per_byte);
     default:
         abort();
     }
@@ -413,13 +413,13 @@ FairPriorityQueue::serviceTime(Packet& pkt) {
     switch (prio) {
     case Q_LO:
         //cout << "q_lo: " << _queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO] << " ";
-        return (_queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO]) * _ps_per_byte;
+        return (simtime_picosec)((_queuesize[Q_HI] + _queuesize[Q_MID] + _queuesize[Q_LO]) * _ps_per_byte);
     case Q_MID:
         //cout << "q_mid: " << _queuesize[Q_MID] + _queuesize[Q_LO] << " ";
-        return (_queuesize[Q_HI] + _queuesize[Q_MID]) * _ps_per_byte;
+        return (simtime_picosec)((_queuesize[Q_HI] + _queuesize[Q_MID]) * _ps_per_byte);
     case Q_HI:
         //cout << "q_hi: " << _queuesize[Q_LO] << " ";
-        return _queuesize[Q_HI] * _ps_per_byte;
+        return (simtime_picosec)(_queuesize[Q_HI] * _ps_per_byte);
     default:
         abort();
     }
