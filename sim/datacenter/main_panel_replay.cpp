@@ -91,11 +91,20 @@ static size_t g_dep_out = 0, g_plan_out = 0;
 static simtime_picosec g_dep_end = 0, g_plan_end = 0;
 static uint64_t plan_reconfigs = 0;
 
-static bool plan_matching_changed(const PlanCfg& a, const PlanCfg& b) {
+static bool plan_matching_changed_oriented(const PlanCfg& a, bool transpose_a,
+                                           const PlanCfg& b, bool transpose_b) {
     std::set<std::pair<uint32_t,uint32_t>> sa, sb;
-    for (size_t i = 0; i < a.circ.size(); i++) sa.insert({a.circ[i].s, a.circ[i].d});
-    for (size_t i = 0; i < b.circ.size(); i++) sb.insert({b.circ[i].s, b.circ[i].d});
+    for (size_t i = 0; i < a.circ.size(); i++)
+        sa.insert(transpose_a ? std::make_pair(a.circ[i].d, a.circ[i].s)
+                              : std::make_pair(a.circ[i].s, a.circ[i].d));
+    for (size_t i = 0; i < b.circ.size(); i++)
+        sb.insert(transpose_b ? std::make_pair(b.circ[i].d, b.circ[i].s)
+                              : std::make_pair(b.circ[i].s, b.circ[i].d));
     return sa != sb;
+}
+
+static bool plan_matching_changed(const PlanCfg& a, const PlanCfg& b) {
+    return plan_matching_changed_oriented(a, false, b, false);
 }
 
 class PlanDriver : public EventSource {
@@ -108,6 +117,16 @@ class PlanDriver : public EventSource {
     int _plane;
 };
 static std::vector<PlanDriver*> plan_drivers;
+static void plan_install(int plane);
+
+class PlanInstaller : public EventSource {
+  public:
+    PlanInstaller(EventList& ev, int plane)
+        : EventSource(ev, "planinst"), _plane(plane) {}
+    virtual void doNextEvent() { plan_install(_plane); }
+  private:
+    int _plane;
+};
 
 static void plan_install(int plane) {
     size_t ci = plan_cur[plane];
@@ -139,17 +158,12 @@ void PlanDriver::doNextEvent() {
     else {
         // dark period: install after T_r
         simtime_picosec t = when;
-        // reuse the driver: schedule install via a zero-length config trick
-        struct Inst : public EventSource {
-            int pl; Inst(EventList& ev, int p) : EventSource(ev, "inst"), pl(p) {}
-            virtual void doNextEvent() { plan_install(pl); }
-        };
-        Inst* iv = new Inst(eventlist(), _plane);
+        PlanInstaller* iv = new PlanInstaller(eventlist(), _plane);
         eventlist().sourceIsPending(*iv, t);
     }
 }
 
-static void plan_launch_all() {
+static void plan_launch_all(bool charge_phase_transition) {
     for (size_t i = 0; i < plan_direct.size(); i++) {
         uint32_t s = plan_transposed ? plan_direct[i].d : plan_direct[i].s;
         uint32_t d = plan_transposed ? plan_direct[i].s : plan_direct[i].d;
@@ -157,7 +171,17 @@ static void plan_launch_all() {
     }
     for (size_t p = 0; p < plan_cfgs.size(); p++) {
         plan_cur[p] = 0;
-        if (!plan_cfgs[p].empty()) plan_install((int)p);
+        if (plan_cfgs[p].empty()) continue;
+        bool changed = charge_phase_transition &&
+            plan_matching_changed_oriented(plan_cfgs[p].back(), false,
+                                           plan_cfgs[p].front(), true);
+        if (changed) {
+            plan_reconfigs++;
+            PlanInstaller* installer = new PlanInstaller(*g_ev, (int)p);
+            g_ev->sourceIsPending(*installer, g_ev->now() + plan_reconf);
+        } else {
+            plan_install((int)p);
+        }
     }
 }
 static void report_and_exit();
@@ -718,7 +742,7 @@ int main(int argc, char** argv) {
         g_plan_out = tot;
         g_phase = 0;
         plan_transposed = false;
-        plan_launch_all();
+        plan_launch_all(false);
         if (combo_mode) {
             uint64_t evn2 = 0;
             while (eventlist.doNextEvent()) {
@@ -732,7 +756,7 @@ int main(int argc, char** argv) {
                 if (g_plan_out == 0 && g_combine && !plan_transposed) {
                     plan_transposed = true;
                     g_plan_out = tot;
-                    plan_launch_all();
+                    plan_launch_all(true);
                 }
                 if (g_plan_out == 0 && (plan_transposed || !g_combine) && g_dep_out == 0)
                     break;
@@ -761,7 +785,7 @@ int main(int argc, char** argv) {
                 g_phase_end.push_back(eventlist.now());
                 plan_transposed = true;
                 g_outstanding = tot;
-                plan_launch_all();
+                plan_launch_all(true);
             } else if (g_outstanding == 0 && (plan_transposed || !g_combine)
                        && g_phase_end.size() < (g_combine ? 2u : 1u)) {
                 g_phase_end.push_back(eventlist.now());
