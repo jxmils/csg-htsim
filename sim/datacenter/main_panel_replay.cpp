@@ -526,6 +526,7 @@ static void start_flow_forced(uint32_t s, uint32_t d, uint64_t bytes, int plane)
 
 int main(int argc, char** argv) {
     string flowdir, flowlist, plan_file, graphfile, depfile; int nlayers = 1, nodes = 64, planes = 2;
+    vector<int> panel_extents;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
     mem_b qsize = 90000 * 1500;
@@ -535,6 +536,20 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-flowlist")) flowlist = argv[++i];
         else if (!strcmp(argv[i], "-layers")) nlayers = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-nodes")) nodes = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-extents")) {
+            panel_extents.clear();
+            const char* value = argv[++i];
+            int extent = 0; bool any = false;
+            for (;; value++) {
+                if (*value >= '0' && *value <= '9') {
+                    extent = extent * 10 + (*value - '0'); any = true;
+                } else {
+                    if (any) panel_extents.push_back(extent);
+                    extent = 0; any = false;
+                    if (!*value) break;
+                }
+            }
+        }
         else if (!strcmp(argv[i], "-panel")) panel = argv[++i];
         else if (!strcmp(argv[i], "-planes")) planes = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-linkGiBps")) link_gibps = atof(argv[++i]);
@@ -574,7 +589,7 @@ int main(int argc, char** argv) {
             (panel == "torus3d" || panel == "mesh3d") ? 0 : planes;
     g_top = new PanelTopology(nodes, base, p, link_gibps, lat,
                               plane_gibps, lat, qsize, &lf, &eventlist,
-                              std::vector<int>(), false, graphfile);
+                              panel_extents, false, graphfile);
     up_free.assign(p, vector<simtime_picosec>(nodes, 0));
     down_free.assign(p, vector<simtime_picosec>(nodes, 0));
     up_peer.assign(p, vector<int>(nodes, -1));
