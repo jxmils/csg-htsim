@@ -605,12 +605,14 @@ int main(int argc, char** argv) {
     PanelTopology::Base base =
         (panel == "torus3d") ? PanelTopology::Base::Torus3D :
         (panel == "mesh3d")  ? PanelTopology::Base::Mesh3D :
+        (panel == "torus2d" || panel == "hybrid") ? PanelTopology::Base::Torus2D :
+        (panel == "mesh2d")  ? PanelTopology::Base::Mesh2D :
+        (panel == "ring1d")  ? PanelTopology::Base::Ring1D :
+        (panel == "ringrows") ? PanelTopology::Base::RingRows :
         (panel == "fullswitch") ? PanelTopology::Base::None :
         (panel == "custom") ? PanelTopology::Base::Custom :
         PanelTopology::Base::Torus2D;
-    int p = (panel == "custom") ? 0 :
-            (panel == "fullswitch") ? 6 :
-            (panel == "torus3d" || panel == "mesh3d") ? 0 : planes;
+    int p = (panel == "custom") ? 0 : planes;
     g_top = new PanelTopology(nodes, base, p, link_gibps, lat,
                               plane_gibps, lat, qsize, &lf, &eventlist,
                               panel_extents, false, graphfile);
