@@ -119,8 +119,10 @@ class PanelTopology : public Topology {
     std::vector<std::vector<LedgerQueue*>> _down_q;
     std::vector<std::vector<Pipe*>> _down_p;
 
-    // Custom base: arbitrary directed graph from file ("E src dst" lines),
-    // BFS shortest-path next-hop routing.
+    // Custom base: arbitrary directed graph from file. Lines are either
+    // "E src dst" (CLI defaults) or
+    // "E src dst bandwidth_GiBps latency_ns" (per-edge values).
+    // Routing is BFS shortest path and therefore remains hop-count based.
     std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
     std::vector<std::vector<int>> _nh;            // [src][dst] -> out-port (-1 none)
     std::string _graphfile;

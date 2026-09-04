@@ -154,30 +154,65 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     // Two passes: the graph may carry non-endpoint devices (HammingMesh row and
     // column switches) whose ids run past the endpoint count, so size to the
     // highest id present rather than to _n.
-    std::vector<std::pair<long,long>> edges;
+    struct CustomEdge {
+        long src, dst;
+        double link_gibps;
+        simtime_picosec latency;
+    };
+    std::vector<CustomEdge> edges;
     long maxid = (long)_n - 1;
-    std::string tok;
-    while (f >> tok) {
-        if (tok == "E") {
-            long a, b; f >> a >> b;
-            edges.push_back(std::make_pair(a, b));
-            if (a > maxid) maxid = a;
-            if (b > maxid) maxid = b;
-        } else { std::string rest; std::getline(f, rest); }
+    std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream input(line);
+        std::string tok;
+        input >> tok;
+        if (tok != "E") continue;
+        CustomEdge edge;
+        edge.link_gibps = gibps;
+        edge.latency = lat;
+        if (!(input >> edge.src >> edge.dst)) {
+            std::cerr << "malformed custom edge: " << line << std::endl;
+            abort();
+        }
+        double edge_latency_ns = -1;
+        if (input >> edge.link_gibps) {
+            if (!(input >> edge_latency_ns)) {
+                std::cerr << "custom edge bandwidth requires latency_ns: "
+                          << line << std::endl;
+                abort();
+            }
+            if (edge_latency_ns < 0) {
+                std::cerr << "negative custom edge latency: " << line << std::endl;
+                abort();
+            }
+            edge.latency = timeFromNs(edge_latency_ns);
+        }
+        if (edge.link_gibps <= 0) {
+            std::cerr << "invalid custom edge parameters: " << line << std::endl;
+            abort();
+        }
+        edges.push_back(edge);
+        if (edge.src > maxid) maxid = edge.src;
+        if (edge.dst > maxid) maxid = edge.dst;
     }
     _ndev = (uint32_t)(maxid + 1);
     _adj.assign(_ndev, std::vector<uint32_t>());
-    for (size_t i = 0; i < edges.size(); i++)
-        _adj[edges[i].first].push_back((uint32_t)edges[i].second);
+    std::vector<std::vector<double>> edge_gibps(_ndev);
+    std::vector<std::vector<simtime_picosec>> edge_latency(_ndev);
+    for (size_t i = 0; i < edges.size(); i++) {
+        _adj[edges[i].src].push_back((uint32_t)edges[i].dst);
+        edge_gibps[edges[i].src].push_back(edges[i].link_gibps);
+        edge_latency[edges[i].src].push_back(edges[i].latency);
+    }
     _dir_q.assign(_ndev, std::vector<LedgerQueue*>());
     _dir_p.assign(_ndev, std::vector<Pipe*>());
     for (uint32_t u = 0; u < _ndev; u++) {
         for (size_t p = 0; p < _adj[u].size(); p++) {
             char nm[64];
             snprintf(nm, sizeof(nm), "cq_%u_%zu", u, p);
-            _dir_q[u].push_back(make_queue(gibps, nm));
+            _dir_q[u].push_back(make_queue(edge_gibps[u][p], nm));
             snprintf(nm, sizeof(nm), "cp_%u_%zu", u, p);
-            _dir_p[u].push_back(make_pipe(lat, nm));
+            _dir_p[u].push_back(make_pipe(edge_latency[u][p], nm));
         }
     }
     // per-source BFS next-hop port table
