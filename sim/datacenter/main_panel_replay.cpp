@@ -244,6 +244,10 @@ static void flow_done_cb(int /*src*/, int /*dst*/, int /*size*/, int tag) {
         }
         return;
     }
+    if (dep_mode) {
+        --g_outstanding;
+        return;  // dependency-mode main loop owns completion reporting
+    }
     if (--g_outstanding == 0) {
         if (plan_mode) return;      // plan main loop owns phase transitions
         g_phase_end.push_back(g_ev->now());
