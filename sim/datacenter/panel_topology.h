@@ -95,6 +95,10 @@ class PanelTopology : public Topology {
     std::vector<Candidate>* get_candidates(uint32_t src, uint32_t dest);
 
     int planes() const { return _planes; }
+    // Custom base only: -ecmp selects among all equal-cost next hops by
+    // dest mod k at each hop (merlin fat-tree deterministic rule). Off = old
+    // single-path BFS table, unchanged.
+    static bool ecmp;
     bool has_base() const { return _base != Base::None; }
 
   private:
@@ -123,6 +127,7 @@ class PanelTopology : public Topology {
     // BFS shortest-path next-hop routing.
     std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
     std::vector<std::vector<int>> _nh;            // [src][dst] -> out-port (-1 none)
+    std::vector<std::vector<std::vector<int>>> _nhs; // [src][dst] -> all shortest-path out-ports (-ecmp)
     std::string _graphfile;
     void build_custom(double gibps, simtime_picosec lat);
 

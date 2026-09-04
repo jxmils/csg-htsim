@@ -10,6 +10,7 @@
 using namespace std;
 
 static string ntos(int v) { stringstream s; s << v; return s.str(); }
+bool PanelTopology::ecmp = false;
 
 PanelTopology::PanelTopology(uint32_t npus, Base base, int planes,
                              double base_gibps, simtime_picosec base_latency,
@@ -196,16 +197,17 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             _dir_p[u].push_back(make_pipe(lat, nm));
         }
     }
-    // per-source BFS next-hop port table
+    // per-source BFS next-hop port table (+ hop distances for -ecmp)
     _nh.assign(_ndev, std::vector<int>(_ndev, -1));
+    std::vector<std::vector<int>> dist(_ndev, std::vector<int>(_ndev, -1));
     for (uint32_t s = 0; s < _ndev; s++) {
         std::vector<int> par(_ndev, -1), parport(_ndev, -1);
-        std::vector<uint32_t> q; q.push_back(s); par[s] = (int)s;
+        std::vector<uint32_t> q; q.push_back(s); par[s] = (int)s; dist[s][s] = 0;
         for (size_t qi = 0; qi < q.size(); qi++) {
             uint32_t u = q[qi];
             for (size_t p = 0; p < _adj[u].size(); p++) {
                 uint32_t v = _adj[u][p];
-                if (par[v] < 0) { par[v] = (int)u; parport[v] = (int)p; q.push_back(v); }
+                if (par[v] < 0) { par[v] = (int)u; parport[v] = (int)p; dist[s][v] = dist[s][u] + 1; q.push_back(v); }
             }
         }
         for (uint32_t d = 0; d < _ndev; d++) {
@@ -215,6 +217,20 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             _nh[s][d] = parport[cur];
         }
     }
+    // equal-cost next-hop sets: port p at u is on a shortest path to d iff
+    // dist[v][d] == dist[u][d] - 1 for v = adj[u][p] (distances are per-source
+    // BFS, so directed graphs are handled exactly).
+    _nhs.assign(_ndev, std::vector<std::vector<int>>(_ndev));
+    size_t multi = 0;
+    for (uint32_t u = 0; u < _ndev; u++)
+        for (uint32_t d = 0; d < _ndev; d++) {
+            if (u == d || dist[u][d] < 0) continue;
+            for (size_t p = 0; p < _adj[u].size(); p++)
+                if (dist[_adj[u][p]][d] == dist[u][d] - 1) _nhs[u][d].push_back((int)p);
+            if (_nhs[u][d].size() > 1) multi++;
+        }
+    std::cerr << "custom graph routing: " << (ecmp ? "ECMP dest-hash (dest mod k) over equal-cost next hops" : "single-path BFS")
+              << ", " << multi << " (node,dest) pairs have >1 equal-cost next hop" << std::endl;
 }
 
 PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t dest) {
@@ -226,7 +242,9 @@ PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t 
     if (_base == Base::Custom) {
         uint32_t cur = src;
         while (cur != dest) {
-            int port = _nh[cur][dest];
+            int port;
+            if (ecmp) { const std::vector<int>& c = _nhs[cur][dest]; assert(!c.empty()); port = c[dest % c.size()]; }
+            else port = _nh[cur][dest];
             assert(port >= 0);
             LedgerQueue* q = _dir_q[cur][port];
             Pipe* p = _dir_p[cur][port];
