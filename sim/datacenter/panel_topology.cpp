@@ -158,17 +158,20 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     std::vector<std::pair<long,long>> edges;
     // Optional third column: per-link rate in GiB/s ("E a b 4800"). Links
     // without it take -linkGiBps, so files without the column are unchanged.
+    // Optional fourth column: per-link latency in ns ("E a b 1200 325"); absent -> lat.
     std::vector<double> ebw;
+    std::vector<double> elat;
     long maxid = (long)_n - 1;
     std::string tok;
     while (f >> tok) {
         if (tok == "E") {
             long a, b; f >> a >> b;
             std::string rest; std::getline(f, rest);
-            double w = 0.0;
-            { std::istringstream rs(rest); rs >> w; if (rs.fail()) w = 0.0; }
+            double w = 0.0, l = -1.0;
+            { std::istringstream rs(rest); rs >> w; if (rs.fail()) w = 0.0; else { rs >> l; if (rs.fail()) l = -1.0; } }
             edges.push_back(std::make_pair(a, b));
             ebw.push_back(w);
+            elat.push_back(l);
             if (a > maxid) maxid = a;
             if (b > maxid) maxid = b;
         } else { std::string rest; std::getline(f, rest); }
@@ -176,15 +179,19 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     _ndev = (uint32_t)(maxid + 1);
     _adj.assign(_ndev, std::vector<uint32_t>());
     std::vector<std::vector<double>> adjbw(_ndev);
-    size_t n_explicit = 0;
+    std::vector<std::vector<double>> adjlat(_ndev);
+    size_t n_explicit = 0, n_lat = 0;
     for (size_t i = 0; i < edges.size(); i++) {
         _adj[edges[i].first].push_back((uint32_t)edges[i].second);
         adjbw[edges[i].first].push_back(ebw[i]);
+        adjlat[edges[i].first].push_back(elat[i]);
         if (ebw[i] > 0.0) n_explicit++;
+        if (elat[i] >= 0.0) n_lat++;
     }
     std::cerr << "custom graph: " << edges.size() << " directed links, "
               << n_explicit << " with explicit per-link GiB/s (rest at -linkGiBps "
-              << gibps << ")" << std::endl;
+              << gibps << "), " << n_lat << " with explicit per-link latency ns (rest at -latencyNs "
+              << timeAsNs(lat) << ")" << std::endl;
     _dir_q.assign(_ndev, std::vector<LedgerQueue*>());
     _dir_p.assign(_ndev, std::vector<Pipe*>());
     for (uint32_t u = 0; u < _ndev; u++) {
@@ -194,7 +201,8 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             double g = adjbw[u][p] > 0.0 ? adjbw[u][p] : gibps;
             _dir_q[u].push_back(make_queue(g, nm));
             snprintf(nm, sizeof(nm), "cp_%u_%zu", u, p);
-            _dir_p[u].push_back(make_pipe(lat, nm));
+            simtime_picosec pl = adjlat[u][p] >= 0.0 ? timeFromNs(adjlat[u][p]) : lat;
+            _dir_p[u].push_back(make_pipe(pl, nm));
         }
     }
     // per-source BFS next-hop port table (+ hop distances for -ecmp)
