@@ -50,6 +50,9 @@ htsim_dumbell_ndptunnel:	main_dumbell_ndptunnel.o $(LIBDEP)
 htsim_trigger_test:	main_trigger_test.o $(LIBDEP)
 	$(CC) $(CFLAGS) main_trigger_test.o -o htsim_trigger_test $(LIBS)
 
+htsim_output_framing_test:	main_output_framing.o $(LIBDEP)
+	$(CC) $(CFLAGS) main_output_framing.o -o htsim_output_framing_test $(LIBS)
+
 RUN_TESTS_0 = ./tests.py
 RUN_TESTS_1 = ./tests.py -v
 V ?= 0
