@@ -35,6 +35,13 @@ inline linkspeed_bps speedFromGiBps(double gibps) {
     return (linkspeed_bps)(gibps * 8.0 * 1073741824.0);
 }
 
+// -planeLatencyNs is specified as one complete endpoint-to-endpoint OCS
+// traversal. PanelTopology represents that traversal with an up and a down
+// pipe, so each pipe receives exactly half of the configured whole-path delay.
+inline simtime_picosec panelPlaneLegLatencyFromWholePathNs(double ns) {
+    return timeFromNs(ns / 2.0);
+}
+
 // A FIFO queue that additionally tracks bytes RESERVED by flows routed through
 // it but not yet begun serializing -- the packet-level mirror of the
 // analytical Link::outstanding_bytes (reserve at injection, release when
@@ -119,7 +126,8 @@ class PanelTopology : public Topology {
     std::vector<std::vector<LedgerQueue*>> _down_q;
     std::vector<std::vector<Pipe*>> _down_p;
 
-    // Custom base: arbitrary directed graph from file ("E src dst" lines),
+    // Custom base: arbitrary directed graph from file. Edge records are
+    // "E src dst [GiB/s [latency_ns]]"; omitted values use topology defaults.
     // BFS shortest-path next-hop routing.
     std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
     std::vector<std::vector<int>> _nh;            // [src][dst] -> out-port (-1 none)

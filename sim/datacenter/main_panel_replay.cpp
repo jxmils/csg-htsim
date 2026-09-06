@@ -553,6 +553,8 @@ int main(int argc, char** argv) {
     vector<int> panel_extents;
     double link_gibps = 200, plane_gibps = -1;
     simtime_picosec lat = timeFromNs(1000);
+    simtime_picosec plane_lat = 0;
+    bool plane_latency_explicit = false;
     mem_b qsize = 90000 * 1500;
     string panel = "hybrid", policy = "directpref";
     for (int i = 1; i < argc; i++) {
@@ -579,6 +581,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "-linkGiBps")) link_gibps = atof(argv[++i]);
         else if (!strcmp(argv[i], "-planeGiBps")) plane_gibps = atof(argv[++i]);
         else if (!strcmp(argv[i], "-latencyNs")) lat = timeFromNs(atof(argv[++i]));
+        else if (!strcmp(argv[i], "-planeLatencyNs")) {
+            double whole_path_ns = atof(argv[++i]);
+            if (whole_path_ns < 0.0) {
+                fprintf(stderr, "-planeLatencyNs must be nonnegative\n");
+                return 1;
+            }
+            plane_lat = panelPlaneLegLatencyFromWholePathNs(whole_path_ns);
+            plane_latency_explicit = true;
+        }
         else if (!strcmp(argv[i], "-policy")) policy = argv[++i];
         else if (!strcmp(argv[i], "-ocs")) g_ocs = true;
         else if (!strcmp(argv[i], "-reconfNs")) g_reconf = timeFromNs(atof(argv[++i]));
@@ -593,6 +604,7 @@ int main(int argc, char** argv) {
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 1; }
     }
     if (plane_gibps < 0) plane_gibps = link_gibps;
+    if (!plane_latency_explicit) plane_lat = lat;
     g_policy = (policy == "static") ? 0 : (policy == "adaptive") ? 1 : 2;
 
     EventList eventlist; g_ev = &eventlist;
@@ -612,8 +624,12 @@ int main(int argc, char** argv) {
             (panel == "fullswitch") ? 6 :
             (panel == "torus3d" || panel == "mesh3d") ? 0 : planes;
     g_top = new PanelTopology(nodes, base, p, link_gibps, lat,
-                              plane_gibps, lat, qsize, &lf, &eventlist,
+                              plane_gibps, plane_lat, qsize, &lf, &eventlist,
                               panel_extents, false, graphfile);
+    printf("PANEL_LATENCY_CONFIG direct_edge_ns=%.3f plane_leg_ns=%.3f "
+           "plane_whole_path_ns=%.3f plane_whole_path_explicit=%d\n",
+           timeAsNs(lat), timeAsNs(plane_lat), 2.0 * timeAsNs(plane_lat),
+           (int)plane_latency_explicit);
     up_free.assign(p, vector<simtime_picosec>(nodes, 0));
     down_free.assign(p, vector<simtime_picosec>(nodes, 0));
     up_peer.assign(p, vector<int>(nodes, -1));

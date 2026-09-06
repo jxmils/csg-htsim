@@ -155,29 +155,63 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     // column switches) whose ids run past the endpoint count, so size to the
     // highest id present rather than to _n.
     std::vector<std::pair<long,long>> edges;
+    std::vector<double> edge_gibps;
+    std::vector<double> edge_latency_ns;
     long maxid = (long)_n - 1;
     std::string tok;
     while (f >> tok) {
         if (tok == "E") {
             long a, b; f >> a >> b;
+            std::string rest;
+            std::getline(f, rest);
+            double edge_rate = 0.0;
+            double edge_latency = -1.0;
+            std::istringstream fields(rest);
+            if (!(fields >> edge_rate)) edge_rate = 0.0;
+            if (!(fields >> edge_latency)) edge_latency = -1.0;
+            if (edge_rate < 0.0 || edge_latency < -1.0) {
+                cerr << "PanelTopology: invalid custom edge attributes for "
+                     << a << " -> " << b << endl;
+                exit(1);
+            }
             edges.push_back(std::make_pair(a, b));
+            edge_gibps.push_back(edge_rate);
+            edge_latency_ns.push_back(edge_latency);
             if (a > maxid) maxid = a;
             if (b > maxid) maxid = b;
         } else { std::string rest; std::getline(f, rest); }
     }
     _ndev = (uint32_t)(maxid + 1);
     _adj.assign(_ndev, std::vector<uint32_t>());
-    for (size_t i = 0; i < edges.size(); i++)
+    std::vector<std::vector<double>> adjacency_gibps(_ndev);
+    std::vector<std::vector<double>> adjacency_latency_ns(_ndev);
+    size_t explicit_rates = 0;
+    size_t explicit_latencies = 0;
+    for (size_t i = 0; i < edges.size(); i++) {
         _adj[edges[i].first].push_back((uint32_t)edges[i].second);
+        adjacency_gibps[edges[i].first].push_back(edge_gibps[i]);
+        adjacency_latency_ns[edges[i].first].push_back(edge_latency_ns[i]);
+        if (edge_gibps[i] > 0.0) explicit_rates++;
+        if (edge_latency_ns[i] >= 0.0) explicit_latencies++;
+    }
+    cerr << "custom graph: " << edges.size() << " directed links, "
+         << explicit_rates << " with explicit per-link GiB/s (rest at "
+         << gibps << "), " << explicit_latencies
+         << " with explicit per-link latency ns (rest at "
+         << timeAsNs(lat) << ")" << endl;
     _dir_q.assign(_ndev, std::vector<LedgerQueue*>());
     _dir_p.assign(_ndev, std::vector<Pipe*>());
     for (uint32_t u = 0; u < _ndev; u++) {
         for (size_t p = 0; p < _adj[u].size(); p++) {
             char nm[64];
             snprintf(nm, sizeof(nm), "cq_%u_%zu", u, p);
-            _dir_q[u].push_back(make_queue(gibps, nm));
+            double edge_rate = adjacency_gibps[u][p] > 0.0
+                ? adjacency_gibps[u][p] : gibps;
+            _dir_q[u].push_back(make_queue(edge_rate, nm));
             snprintf(nm, sizeof(nm), "cp_%u_%zu", u, p);
-            _dir_p[u].push_back(make_pipe(lat, nm));
+            simtime_picosec edge_latency = adjacency_latency_ns[u][p] >= 0.0
+                ? timeFromNs(adjacency_latency_ns[u][p]) : lat;
+            _dir_p[u].push_back(make_pipe(edge_latency, nm));
         }
     }
     // per-source BFS next-hop port table

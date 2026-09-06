@@ -101,8 +101,14 @@ clean:
 htsim_panel_replay: main_panel_replay.o panel_topology.o ../libhtsim.a
 	$(CC) $(CFLAGS) main_panel_replay.o panel_topology.o $(LIB) -lhtsim -o htsim_panel_replay
 
+htsim_panel_latency_test: main_panel_latency_test.o panel_topology.o ../libhtsim.a
+	$(CC) $(CFLAGS) main_panel_latency_test.o panel_topology.o $(LIB) -lhtsim -o htsim_panel_latency_test
+
 main_panel_replay.o: main_panel_replay.cpp ${DEPS} panel_topology.h
 	$(CC) $(INCLUDE) $(CFLAGS) -c main_panel_replay.cpp
 
 panel_topology.o: panel_topology.cpp panel_topology.h ${DEPS}
 	$(CC) $(INCLUDE) $(CFLAGS) -c panel_topology.cpp
+
+main_panel_latency_test.o: main_panel_latency_test.cpp ${DEPS} panel_topology.h
+	$(CC) $(INCLUDE) $(CFLAGS) -c main_panel_latency_test.cpp
