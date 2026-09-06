@@ -185,7 +185,8 @@ TcpSrc::receivePacket(Packet& pkt)
     if (_rto<timeFromSec(0.25))
         _rto = timeFromSec(.25);
 
-    if (seqno >= _flow_size){
+    if (seqno >= _flow_size && !_astrasim_send_completion_reported){
+        _astrasim_send_completion_reported = true;
         cout << "Flow " << nodename() << " finished at " << timeAsMs(eventlist().now()) << endl;        
         // AstraSim entry point
         // Use IDs memorized at point of adding the flow, as well as unique src tag for the transition
@@ -641,6 +642,7 @@ TcpSink::connect(TcpSrc& src, const Route& route) {
     _route = &route;
     _cumulative_ack = 0;
     _drops = 0;
+    _astrasim_recv_completion_reported = false;
 }
 
 // Note: _cumulative_ack is the last byte we've ACKed.
@@ -696,7 +698,9 @@ TcpSink::receivePacket(Packet& pkt) {
 
     // AstraSim entry point
     // Use IDs memorized at point of adding the flow, as well as unique src tag for the transition
-    if (_cumulative_ack >= _src->_flow_size && astrasim_flow_finish_recv_cb) {
+    if (_cumulative_ack >= _src->_flow_size && astrasim_flow_finish_recv_cb &&
+        !_astrasim_recv_completion_reported) {
+        _astrasim_recv_completion_reported = true;
         int tag = _src->getFlowId();
         int src_id = _debug_srcid;
         int dst_id = _debug_dstid;

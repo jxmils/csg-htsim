@@ -144,6 +144,7 @@ private:
         // for AstraSim
         inline void setFlowId(flowid_t flow_id) { _flow.set_flowid(flow_id); }
         void (*astrasim_flow_finish_send_cb)(int, int, int, int) = nullptr;
+        bool _astrasim_send_completion_reported = false;
         int _debug_srcid = -1;
         int _debug_dstid = -1;
 };
@@ -193,6 +194,7 @@ private:
     // for AstraSim
     inline void setFlowId(flowid_t flow_id) { _src->_flow.set_flowid(flow_id); }
     void (*astrasim_flow_finish_recv_cb)(int, int, int, int) = nullptr;
+    bool _astrasim_recv_completion_reported = false;
     int _debug_srcid = -1;
     int _debug_dstid = -1;
 };

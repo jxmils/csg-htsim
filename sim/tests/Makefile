@@ -53,6 +53,9 @@ htsim_trigger_test:	main_trigger_test.o $(LIBDEP)
 htsim_output_framing_test:	main_output_framing.o $(LIBDEP)
 	$(CC) $(CFLAGS) main_output_framing.o -o htsim_output_framing_test $(LIBS)
 
+htsim_tcp_completion_once_test:	main_tcp_completion_once.o $(LIBDEP)
+	$(CC) $(CFLAGS) main_tcp_completion_once.o -o htsim_tcp_completion_once_test $(LIBS)
+
 RUN_TESTS_0 = ./tests.py
 RUN_TESTS_1 = ./tests.py -v
 V ?= 0
