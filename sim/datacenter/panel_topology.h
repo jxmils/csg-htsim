@@ -128,9 +128,12 @@ class PanelTopology : public Topology {
 
     // Custom base: arbitrary directed graph from file. Edge records are
     // "E src dst [GiB/s [latency_ns]]"; omitted values use topology defaults.
-    // BFS shortest-path next-hop routing.
+    // Equal-cost shortest-path routing with deterministic per-flow selection.
     std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
-    std::vector<std::vector<int>> _nh;            // [src][dst] -> out-port (-1 none)
+    // Every output port that lies on an equal-hop shortest path.  Custom-graph
+    // routing hashes each endpoint pair over this set instead of collapsing a
+    // multi-spine fabric onto the first BFS parent.
+    std::vector<std::vector<std::vector<int>>> _nh; // [device][dst] -> out-ports
     std::string _graphfile;
     void build_custom(double gibps, simtime_picosec lat);
 

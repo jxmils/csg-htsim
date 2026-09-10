@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "panel_topology.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include "main.h"
@@ -214,25 +215,66 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             _dir_p[u].push_back(make_pipe(edge_latency, nm));
         }
     }
-    // per-source BFS next-hop port table
-    _nh.assign(_ndev, std::vector<int>(_ndev, -1));
-    for (uint32_t s = 0; s < _ndev; s++) {
-        std::vector<int> par(_ndev, -1), parport(_ndev, -1);
-        std::vector<uint32_t> q; q.push_back(s); par[s] = (int)s;
-        for (size_t qi = 0; qi < q.size(); qi++) {
-            uint32_t u = q[qi];
-            for (size_t p = 0; p < _adj[u].size(); p++) {
-                uint32_t v = _adj[u][p];
-                if (par[v] < 0) { par[v] = (int)u; parport[v] = (int)p; q.push_back(v); }
-            }
-        }
-        for (uint32_t d = 0; d < _ndev; d++) {
-            if (d == s || par[d] < 0) continue;
-            uint32_t cur = d;
-            while ((uint32_t)par[cur] != s) cur = (uint32_t)par[cur];
-            _nh[s][d] = parport[cur];
+    // Equal-cost shortest-path next-hop table.  Distances are computed from
+    // each destination over the reverse graph, then every outgoing edge that
+    // reduces the distance by one is retained.
+    std::vector<std::vector<std::pair<uint32_t, int>>> reverse(_ndev);
+    for (uint32_t u = 0; u < _ndev; u++) {
+        for (size_t p = 0; p < _adj[u].size(); p++) {
+            reverse[_adj[u][p]].push_back(std::make_pair(u, (int)p));
         }
     }
+    _nh.assign(_ndev, std::vector<std::vector<int>>(_ndev));
+    size_t candidate_sets = 0;
+    size_t multipath_sets = 0;
+    size_t maximum_width = 0;
+    for (uint32_t d = 0; d < _ndev; d++) {
+        std::vector<int> distance(_ndev, -1);
+        std::vector<uint32_t> q(1, d);
+        distance[d] = 0;
+        for (size_t qi = 0; qi < q.size(); qi++) {
+            uint32_t v = q[qi];
+            for (const auto& predecessor : reverse[v]) {
+                uint32_t u = predecessor.first;
+                if (distance[u] < 0) {
+                    distance[u] = distance[v] + 1;
+                    q.push_back(u);
+                }
+            }
+        }
+        for (uint32_t u = 0; u < _ndev; u++) {
+            if (distance[u] <= 0) continue;
+            for (size_t p = 0; p < _adj[u].size(); p++) {
+                uint32_t v = _adj[u][p];
+                if (distance[v] == distance[u] - 1) {
+                    _nh[u][d].push_back((int)p);
+                }
+            }
+            if (!_nh[u][d].empty()) {
+                candidate_sets++;
+                maximum_width = std::max(maximum_width, _nh[u][d].size());
+                if (_nh[u][d].size() > 1) multipath_sets++;
+            }
+        }
+    }
+    cout << "CUSTOM_GRAPH_ECMP"
+         << " status=ENABLED"
+         << " endpoints=" << _n
+         << " devices=" << _ndev
+         << " candidate_sets=" << candidate_sets
+         << " multipath_sets=" << multipath_sets
+         << " max_width=" << maximum_width
+         << endl;
+}
+
+static uint64_t panel_pair_hash(uint32_t source, uint32_t destination,
+                                uint32_t current) {
+    uint64_t value = ((uint64_t)source << 32) ^ destination ^
+                     ((uint64_t)current * 0x9e3779b97f4a7c15ULL);
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
 }
 
 PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t dest) {
@@ -244,8 +286,9 @@ PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t 
     if (_base == Base::Custom) {
         uint32_t cur = src;
         while (cur != dest) {
-            int port = _nh[cur][dest];
-            assert(port >= 0);
+            const std::vector<int>& ports = _nh[cur][dest];
+            assert(!ports.empty());
+            int port = ports[panel_pair_hash(src, dest, cur) % ports.size()];
             LedgerQueue* q = _dir_q[cur][port];
             Pipe* p = _dir_p[cur][port];
             cand.route->push_back(q); cand.route->push_back(p);
