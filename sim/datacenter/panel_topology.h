@@ -26,6 +26,7 @@
 #include "eventlist.h"
 #include "logfile.h"
 #include "loggers.h"
+#include <unordered_map>
 #include <vector>
 
 // Bandwidth convention: the analytical backend treats "GB/s" as GiB/s
@@ -128,12 +129,14 @@ class PanelTopology : public Topology {
 
     // Custom base: arbitrary directed graph from file. Edge records are
     // "E src dst [GiB/s [latency_ns]]"; omitted values use topology defaults.
-    // Equal-cost shortest-path routing with deterministic per-flow selection.
+    // Optional "R src dst node0 ... nodeK" records bind selected endpoint pairs
+    // to an explicit validated path. Other pairs retain deterministic ECMP.
     std::vector<std::vector<uint32_t>> _adj;      // [node] -> out-neighbors
     // Every output port that lies on an equal-hop shortest path.  Custom-graph
     // routing hashes each endpoint pair over this set instead of collapsing a
     // multi-spine fabric onto the first BFS parent.
     std::vector<std::vector<std::vector<int>>> _nh; // [device][dst] -> out-ports
+    std::unordered_map<uint64_t, std::vector<int>> _route_overrides;
     std::string _graphfile;
     void build_custom(double gibps, simtime_picosec lat);
 

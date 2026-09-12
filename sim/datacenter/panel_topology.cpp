@@ -7,6 +7,7 @@
 #include <sstream>
 #include <cassert>
 #include <cmath>
+#include <set>
 
 using namespace std;
 
@@ -158,6 +159,12 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
     std::vector<std::pair<long,long>> edges;
     std::vector<double> edge_gibps;
     std::vector<double> edge_latency_ns;
+    struct RouteRecord {
+        uint32_t source;
+        uint32_t destination;
+        std::vector<uint32_t> nodes;
+    };
+    std::vector<RouteRecord> route_records;
     long maxid = (long)_n - 1;
     std::string tok;
     while (f >> tok) {
@@ -180,6 +187,31 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             edge_latency_ns.push_back(edge_latency);
             if (a > maxid) maxid = a;
             if (b > maxid) maxid = b;
+        } else if (tok == "R") {
+            long source, destination;
+            f >> source >> destination;
+            std::string rest;
+            std::getline(f, rest);
+            if (source < 0 || destination < 0 ||
+                source >= (long)_n || destination >= (long)_n ||
+                source == destination) {
+                cerr << "PanelTopology: invalid custom route endpoints "
+                     << source << " -> " << destination << endl;
+                exit(1);
+            }
+            RouteRecord record;
+            record.source = (uint32_t)source;
+            record.destination = (uint32_t)destination;
+            std::istringstream nodes(rest);
+            long node;
+            while (nodes >> node) {
+                if (node < 0) {
+                    cerr << "PanelTopology: negative custom route node" << endl;
+                    exit(1);
+                }
+                record.nodes.push_back((uint32_t)node);
+            }
+            route_records.push_back(record);
         } else { std::string rest; std::getline(f, rest); }
     }
     _ndev = (uint32_t)(maxid + 1);
@@ -257,6 +289,48 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
             }
         }
     }
+    std::set<uint64_t> route_keys;
+    for (const RouteRecord& record : route_records) {
+        uint64_t key = ((uint64_t)record.source << 32) | record.destination;
+        if (!route_keys.insert(key).second) {
+            cerr << "PanelTopology: duplicate custom route override for "
+                 << record.source << " -> " << record.destination << endl;
+            exit(1);
+        }
+        if (record.nodes.size() < 2 ||
+            record.nodes.front() != record.source ||
+            record.nodes.back() != record.destination) {
+            cerr << "PanelTopology: custom route endpoint mismatch for "
+                 << record.source << " -> " << record.destination << endl;
+            exit(1);
+        }
+        std::vector<int> ports;
+        uint32_t current = record.source;
+        for (size_t i = 1; i < record.nodes.size(); i++) {
+            uint32_t next = record.nodes[i];
+            if (current >= _adj.size() || next >= _adj.size()) {
+                cerr << "PanelTopology: custom route node outside graph" << endl;
+                exit(1);
+            }
+            std::vector<uint32_t>::const_iterator edge =
+                std::find(_adj[current].begin(), _adj[current].end(), next);
+            if (edge == _adj[current].end()) {
+                cerr << "PanelTopology: custom route uses missing edge "
+                     << current << " -> " << next << endl;
+                exit(1);
+            }
+            int port = (int)std::distance(_adj[current].begin(), edge);
+            const std::vector<int>& shortest = _nh[current][record.destination];
+            if (std::find(shortest.begin(), shortest.end(), port) == shortest.end()) {
+                cerr << "PanelTopology: custom route is not shortest for "
+                     << record.source << " -> " << record.destination << endl;
+                exit(1);
+            }
+            ports.push_back(port);
+            current = next;
+        }
+        _route_overrides[key] = ports;
+    }
     cout << "CUSTOM_GRAPH_ECMP"
          << " status=ENABLED"
          << " endpoints=" << _n
@@ -264,6 +338,10 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
          << " candidate_sets=" << candidate_sets
          << " multipath_sets=" << multipath_sets
          << " max_width=" << maximum_width
+         << endl;
+    cout << "CUSTOM_GRAPH_ROUTES"
+         << " status=ENABLED"
+         << " overrides=" << _route_overrides.size()
          << endl;
 }
 
@@ -285,10 +363,20 @@ PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t 
 
     if (_base == Base::Custom) {
         uint32_t cur = src;
+        uint64_t key = ((uint64_t)src << 32) | dest;
+        std::unordered_map<uint64_t, std::vector<int>>::const_iterator override =
+            _route_overrides.find(key);
+        size_t override_index = 0;
         while (cur != dest) {
             const std::vector<int>& ports = _nh[cur][dest];
             assert(!ports.empty());
-            int port = ports[panel_pair_hash(src, dest, cur) % ports.size()];
+            int port;
+            if (override != _route_overrides.end()) {
+                assert(override_index < override->second.size());
+                port = override->second[override_index++];
+            } else {
+                port = ports[panel_pair_hash(src, dest, cur) % ports.size()];
+            }
             LedgerQueue* q = _dir_q[cur][port];
             Pipe* p = _dir_p[cur][port];
             cand.route->push_back(q); cand.route->push_back(p);
@@ -297,6 +385,8 @@ PanelTopology::Candidate PanelTopology::direct_candidate(uint32_t src, uint32_t 
             cand.hops++;
             cur = _adj[cur][port];
         }
+        assert(override == _route_overrides.end() ||
+               override_index == override->second.size());
         check_non_null(cand.route);
         return cand;
     }
