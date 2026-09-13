@@ -56,6 +56,9 @@ htsim_output_framing_test:	main_output_framing.o $(LIBDEP)
 htsim_tcp_completion_once_test:	main_tcp_completion_once.o $(LIBDEP)
 	$(CC) $(CFLAGS) main_tcp_completion_once.o -o htsim_tcp_completion_once_test $(LIBS)
 
+htsim_preconnected_message_test:	main_preconnected_message.o $(LIBDEP)
+	$(CC) $(CFLAGS) main_preconnected_message.o -o htsim_preconnected_message_test $(LIBS)
+
 RUN_TESTS_0 = ./tests.py
 RUN_TESTS_1 = ./tests.py -v
 V ?= 0

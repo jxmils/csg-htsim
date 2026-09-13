@@ -2,6 +2,7 @@
 #include "tcp.h"
 #include "mtcp.h"
 #include "ecn.h"
+#include <algorithm>
 #include <iostream>
 
 #define KILL_THRESHOLD 5
@@ -29,6 +30,7 @@ TcpSrc::TcpSrc(TcpLogger* logger, TrafficLogger* pktlogger,
     _packets_sent = 0;
     _app_limited = -1;
     _established = false;
+    _preconnected_message = false;
     _effcwnd = 0;
     _cwnd = 10*_mss;
 
@@ -93,9 +95,21 @@ void TcpSrc::set_app_limit(int pktps) {
 void 
 TcpSrc::startflow() {
     _unacked = _cwnd;
-    _established = false;
+    if (!_preconnected_message)
+        _established = false;
 
     send_packets();
+}
+
+void TcpSrc::configure_preconnected_message(
+        uint64_t flow_size_in_bytes, uint16_t maximum_packet_bytes) {
+    assert(flow_size_in_bytes > 0);
+    assert(maximum_packet_bytes > 0);
+    _preconnected_message = true;
+    _established = true;
+    _mss = (uint16_t)std::min<uint64_t>(
+        flow_size_in_bytes, maximum_packet_bytes);
+    _flow_size = flow_size_in_bytes;
 }
 
 uint32_t TcpSrc::effective_window() {
@@ -402,6 +416,29 @@ void
 TcpSrc::send_packets() {
     uint32_t c = _cwnd;
 
+    if (_preconnected_message) {
+        while (_highest_sent < _flow_size) {
+            const uint64_t remaining = _flow_size - _highest_sent;
+            const uint16_t packet_bytes = (uint16_t)std::min<uint64_t>(
+                remaining, _mss);
+            if (_last_acked + c < _highest_sent + packet_bytes)
+                break;
+
+            TcpPacket* p = TcpPacket::newpkt(
+                _flow, *_route, _highest_sent + 1, 0, packet_bytes);
+            if (_dst >= 0) p->set_dst(_dst);
+            p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
+            p->set_ts(eventlist().now());
+            _highest_sent += packet_bytes;
+            _packets_sent += packet_bytes;
+            p->sendOn();
+
+            if (_RFC2988_RTO_timeout == timeInf)
+                _RFC2988_RTO_timeout = eventlist().now() + _rto;
+        }
+        return;
+    }
+
     if (!_established){
         //send SYN packet and wait for SYN/ACK
         Packet * p  = TcpPacket::new_syn_pkt(_flow, *_route, 1, 1);
@@ -671,7 +708,7 @@ TcpSink::receivePacket(Packet& pkt) {
     pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
     p->free();
 
-    _packets+= p->size();
+    _packets += size;
 
     //cout << "Sink recv seqno " << seqno << " size " << size << endl;
 

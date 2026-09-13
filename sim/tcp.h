@@ -37,6 +37,12 @@ public:
     virtual void connect(const Route& routeout, const Route& routeback, 
                          TcpSink& sink, simtime_picosec startTime);
     void startflow();
+    // Model a message over an already-established reliable transport. This is
+    // opt-in because the historical HTSim TCP model charges a SYN exchange and
+    // pads every transfer by one MSS. Message-oriented simulators such as
+    // Ember/Firefly inject the exact MPI payload into an existing NIC transport.
+    void configure_preconnected_message(uint64_t flow_size_in_bytes,
+                                        uint16_t maximum_packet_bytes);
     inline void joinMultipathConnection(MultipathTcpSrc* multipathSrc) {
         _mSrc = multipathSrc;
     };
@@ -94,6 +100,7 @@ public:
     bool _in_fast_recovery;
 
     bool _established;
+    bool _preconnected_message;
 
     uint32_t _drops;
 
