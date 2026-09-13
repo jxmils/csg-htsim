@@ -26,6 +26,10 @@ class TcpSink;
 class MultipathTcpSrc;
 class MultipathTcpSink;
 
+// Controlled by the ASTRA HTSim frontend's -nolog option. This suppresses
+// per-flow console diagnostics without affecting completion callbacks.
+extern bool htsim_quiet_flow_logging;
+
 class TcpSrc : public PacketSink, public EventSource {
     friend class TcpSink;
 public:
