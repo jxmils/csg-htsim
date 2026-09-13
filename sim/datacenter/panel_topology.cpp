@@ -313,13 +313,13 @@ void PanelTopology::build_custom(double gibps, simtime_picosec lat) {
                 exit(1);
             }
             std::vector<uint32_t>::const_iterator edge =
-                std::find(_adj[current].begin(), _adj[current].end(), next);
-            if (edge == _adj[current].end()) {
+                std::find(_adj[current].cbegin(), _adj[current].cend(), next);
+            if (edge == _adj[current].cend()) {
                 cerr << "PanelTopology: custom route uses missing edge "
                      << current << " -> " << next << endl;
                 exit(1);
             }
-            int port = (int)std::distance(_adj[current].begin(), edge);
+            int port = (int)std::distance(_adj[current].cbegin(), edge);
             const std::vector<int>& shortest = _nh[current][record.destination];
             if (std::find(shortest.begin(), shortest.end(), port) == shortest.end()) {
                 cerr << "PanelTopology: custom route is not shortest for "
