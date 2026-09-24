@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-        
 
 #include "eventlist.h"
+#include <iostream>
 #include "trigger.h"
 
 simtime_picosec EventList::_endtime = 0;
@@ -66,6 +67,13 @@ EventList::doNextEvent()
 void 
 EventList::sourceIsPending(EventSource &src, simtime_picosec when) 
 {
+    if (when < now()) {
+        // Name the offender before the assert: a source scheduling into the
+        // past is a caller bug, and the abort alone does not say which.
+        std::cerr << "EventList::sourceIsPending: " << src.str() << " scheduled at "
+                  << when << " ps, now " << now() << " ps (delta " 
+                  << (long long)(when - now()) << ")" << std::endl;
+    }
     assert(when>=now());
     if (_endtime==0 || when<_endtime)
         _pendingsources.insert(make_pair(when,&src));
