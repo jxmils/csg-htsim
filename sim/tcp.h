@@ -53,6 +53,11 @@ public:
     // retransmit both funnel through retransmit_packet). Lets a caller
     // assert loss-freedom after a run.
     static uint64_t _global_rtx_count;
+    // Silence the per-flow "Flow ... finished" / "Finish sending|receiving"
+    // lines (default false: output unchanged). A serving frontend that
+    // reads stdout through a pipe sets it: a 64-rank decode step is ~400k
+    // flows and the lines would dominate the run.
+    static bool _quiet_flow_log;
     void set_dst(int d){_dst=d;}
     int  get_dst(){return _dst;}
 
