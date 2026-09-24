@@ -11,6 +11,7 @@ PacketFlow Packet::_defaultFlow(nullptr);
 void 
 Packet::set_attrs(PacketFlow& flow, int pkt_size, packetid_t id){
     _flow = &flow;
+    attach_flow(flow);
     _size = pkt_size;
     _oldsize = pkt_size;
     _id = id;
@@ -27,6 +28,7 @@ void
 Packet::set_route(PacketFlow& flow, const Route &route, int pkt_size, 
                   packetid_t id){
     _flow = &flow;
+    attach_flow(flow);
     _size = pkt_size;
     _oldsize = pkt_size;
     _id = id;
@@ -36,6 +38,24 @@ Packet::set_route(PacketFlow& flow, const Route &route, int pkt_size,
     _route = &route;
     _is_header = 0;
     _flags = 0;
+}
+
+void
+Packet::attach_flow(PacketFlow& flow) {
+    if (_counted_flow == &flow)
+        return;
+    if (_counted_flow)
+        --_counted_flow->_live_packets;
+    _counted_flow = &flow;
+    ++flow._live_packets;
+}
+
+void
+Packet::release_flow() {
+    if (_counted_flow) {
+        --_counted_flow->_live_packets;
+        _counted_flow = nullptr;
+    }
 }
 
 void 

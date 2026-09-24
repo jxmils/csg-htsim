@@ -7,6 +7,7 @@
  */
 
 #include <list>
+#include <unordered_map>
 #include "config.h"
 #include "network.h"
 #include "tcppacket.h"
@@ -47,6 +48,8 @@ public:
         // cout << "Setting flow size to " << _flow_size << endl;
     }
     flowid_t getFlowId() {return _flow.flow_id();}
+    // Packets (data and acks) of this flow still in the network.
+    inline uint32_t live_packets() const {return _flow.live_packets();}
     void set_ssthresh(uint64_t s){_ssthresh = s;}
     void set_cwnd(uint64_t s){_cwnd = s;}
     // Total retransmissions across all TcpSrc instances (RTO and fast
@@ -209,10 +212,13 @@ public:
     TcpRtxTimerScanner(simtime_picosec scanPeriod, EventList& eventlist);
     void doNextEvent();
     void registerTcp(TcpSrc &tcpsrc);
+    // Stop scanning a source that is about to be deleted. O(1).
+    void unregisterTcp(TcpSrc &tcpsrc);
 private:
     simtime_picosec _scanPeriod;
     typedef list<TcpSrc*> tcps_t;
     tcps_t _tcps;
+    std::unordered_map<TcpSrc*, tcps_t::iterator> _pos;
 };
 
 #endif

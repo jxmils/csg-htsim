@@ -768,14 +768,26 @@ TcpRtxTimerScanner::TcpRtxTimerScanner(simtime_picosec scanPeriod, EventList& ev
 
 void 
 TcpRtxTimerScanner::registerTcp(TcpSrc &tcpsrc) {
-    _tcps.push_back(&tcpsrc);
+    _pos[&tcpsrc] = _tcps.insert(_tcps.end(), &tcpsrc);
+}
+
+void
+TcpRtxTimerScanner::unregisterTcp(TcpSrc &tcpsrc) {
+    auto p = _pos.find(&tcpsrc);
+    if (p == _pos.end())
+        return;
+    _tcps.erase(p->second);
+    _pos.erase(p);
 }
 
 void TcpRtxTimerScanner::doNextEvent() {
     simtime_picosec now = eventlist().now();
-    tcps_t::iterator i;
-    for (i = _tcps.begin(); i!=_tcps.end(); i++) {
+    tcps_t::iterator i = _tcps.begin();
+    while (i != _tcps.end()) {
+        tcps_t::iterator next = i;
+        ++next;   // the hook must not invalidate anything but *i
         (*i)->rtx_timer_hook(now,_scanPeriod);
+        i = next;
     }
     eventlist().sourceIsPendingRel(*this, _scanPeriod);
 }

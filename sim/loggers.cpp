@@ -11,18 +11,43 @@
 LoggedManager::LoggedManager() {};
 
 void LoggedManager::add_logged(Logged* logged) {
+    if (!_free_slots.empty()) {
+        uint32_t slot = _free_slots.back();
+        _free_slots.pop_back();
+        _idmap[slot] = logged;
+        logged->_manager_slot = slot;
+        logged->_log_id = _slot_ids[slot];
+        return;
+    }
+    logged->_log_id = Logged::LASTIDNUM++;
+    logged->_manager_slot = (uint32_t)_idmap.size();
     _idmap.push_back(logged);
+    _slot_ids.push_back(logged->_log_id);
+}
+
+void LoggedManager::remove_logged(Logged* logged) {
+    uint32_t slot = logged->_manager_slot;
+    // A copied Logged shares its original's slot; only the registered
+    // object releases it.
+    if (slot < _idmap.size() && _idmap[slot] == logged) {
+        _idmap[slot] = nullptr;
+        _free_slots.push_back(slot);
+    }
 }
 
 void LoggedManager::dump_idmap() {
     std::ofstream fout("idmap.txt");
     for (size_t i = 0; i < _idmap.size(); i++) {
-        fout << _idmap[i]->get_id() << " " << _idmap[i]->_name << endl;
+        if (_idmap[i])
+            fout << _idmap[i]->get_id() << " " << _idmap[i]->_name << endl;
     }
     fout.close();
 }
 
-LoggedManager Logged::_logged_manager;
+LoggedManager& Logged::manager() {
+    static LoggedManager* m = new LoggedManager();
+    return *m;
+}
 
 string Logger::event_to_str(RawLogEvent& event) {
     return event.str();

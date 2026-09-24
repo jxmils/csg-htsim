@@ -26,28 +26,38 @@ class Logged;
 class LoggedManager {
 public:
     LoggedManager();
+    // Assigns the id and registry slot. A slot (and its id) released by a
+    // destroyed Logged is reused, so a long-running simulation that creates
+    // and deletes many flows keeps the registry bounded by the live count.
     void add_logged(Logged* logged);
+    void remove_logged(Logged* logged);
     void dump_idmap();
 private:
     vector<Logged*> _idmap;
+    vector<uint32_t> _slot_ids;
+    vector<uint32_t> _free_slots;
 };
 
 class Logged {
+    friend class LoggedManager;
  public:
     typedef uint32_t id_t;
-    Logged(const string& name) {_name=name; _log_id=LASTIDNUM; Logged::LASTIDNUM++; _logged_manager.add_logged(this);}
-    virtual ~Logged() {}
+    Logged(const string& name) {_name=name; manager().add_logged(this);}
+    virtual ~Logged() { manager().remove_logged(this); }
     virtual void setName(const string& name) { _name=name; }
     virtual const string& str() { return _name; };
     inline id_t get_id() const {return _log_id;}
     // usually things get their own IDs, but flows, for example, get associated with the sender ID
     void set_id(id_t id) {assert(id < LASTIDNUM); _log_id = id;}
     string _name;
-    static void dump_idmap() {_logged_manager.dump_idmap();}
+    static void dump_idmap() {manager().dump_idmap();}
  private:
     id_t _log_id;
+    uint32_t _manager_slot = 0;
     static id_t LASTIDNUM;
-    static LoggedManager _logged_manager;
+    // Never destroyed: Logged statics in other translation units (the
+    // default PacketFlow, for one) may be destroyed after a static manager.
+    static LoggedManager& manager();
 };
 
 class Logger {

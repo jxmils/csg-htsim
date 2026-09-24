@@ -35,10 +35,15 @@ class PacketFlow : public Logged {
     void set_flowid(flowid_t id);
     inline flowid_t flow_id() const {return _flow_id;}
     bool log_me() const {return _logger != NULL;}
+    // Packets currently attributed to this flow (data and acks) that have not
+    // been returned to their PacketDB free list. Zero means nothing in the
+    // network still references the flow, so its endpoints can be deleted.
+    inline uint32_t live_packets() const {return _live_packets;}
  protected:
     static packetid_t _max_flow_id;
     flowid_t _flow_id;
     TrafficLogger* _logger;
+    uint32_t _live_packets = 0;
 };
 
 
@@ -75,6 +80,9 @@ class Packet {
     /* say "this packet is no longer wanted". (doesn't necessarily
        destroy it, so it can be reused) */
     virtual void free();
+    // Drop this packet's contribution to its flow's live-packet count.
+    // Called by PacketDB when the last reference is released.
+    void release_flow();
 
     static void set_packet_size(int packet_size) {
         // Use Packet::set_packet_size() to change the default packet
@@ -194,6 +202,9 @@ class Packet {
 
     packetid_t _id;
     PacketFlow* _flow{nullptr};
+    // The flow whose live-packet count this packet holds (see attach_flow).
+    PacketFlow* _counted_flow{nullptr};
+    void attach_flow(PacketFlow& flow);
     static PacketFlow _defaultFlow;
     LosslessInputQueue* _ingressqueue;
     uint32_t _path_len; // length of the path in hops - used in BCube priority routing with NDP
@@ -253,8 +264,10 @@ class PacketDB {
         assert(pkt->ref_count()>=1);
         pkt->dec_ref_count();
 
-        if (!pkt->ref_count())
+        if (!pkt->ref_count()) {
+            pkt->release_flow();
             _freelist.push_back(pkt);
+        }
     };
 
  protected:
