@@ -300,13 +300,19 @@ PanelTopology::Candidate PanelTopology::plane_candidate(uint32_t src, uint32_t d
 }
 
 vector<PanelTopology::Candidate>* PanelTopology::get_candidates(uint32_t src, uint32_t dest) {
-    assert(src < _n && dest < _n && src != dest);
+    // Custom graphs may carry flow endpoints past the rank count (memory
+    // pool banks); every other base only routes between ranks.
+    const uint32_t endpoint_limit = (_base == Base::Custom) ? _ndev : _n;
+    assert(src < endpoint_limit && dest < endpoint_limit && src != dest);
+    (void)endpoint_limit;
     vector<Candidate>* out = new vector<Candidate>();
     bool direct_ok = (_dims > 0) || _base == Base::Custom;
     if (_base == Base::RingRows && coord(src, 1) != coord(dest, 1))
         direct_ok = false;   // rows are disjoint rings; cross-row is optical-only
     if (direct_ok) out->push_back(direct_candidate(src, dest));
-    for (int pl = 0; pl < _planes; pl++) out->push_back(plane_candidate(src, dest, pl));
+    // Devices past the rank count (pool endpoints/banks) have no plane ports.
+    if (src < _n && dest < _n)
+        for (int pl = 0; pl < _planes; pl++) out->push_back(plane_candidate(src, dest, pl));
     return out;
 }
 
