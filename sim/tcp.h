@@ -61,6 +61,11 @@ public:
     // reads stdout through a pipe sets it: a 64-rank decode step is ~400k
     // flows and the lines would dominate the run.
     static bool _quiet_flow_log;
+    // A retransmission timeout ends the run at once (used by a serving run
+    // under -nocc: a lost packet means the queue could not hold the window,
+    // and the doubling timeouts would otherwise stall the run for simulated
+    // centuries before the clock wraps).
+    static bool _fatal_rtx_timeout;
     void set_dst(int d){_dst=d;}
     int  get_dst(){return _dst;}
 

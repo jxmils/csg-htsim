@@ -67,12 +67,15 @@ EventList::doNextEvent()
 void 
 EventList::sourceIsPending(EventSource &src, simtime_picosec when) 
 {
-    if (when < now()) {
+    if (when < now() || when - now() > (simtime_picosec)1000000 * 1000000000ULL) {
         // Name the offender before the assert: a source scheduling into the
-        // past is a caller bug, and the abort alone does not say which.
+        // past, or more than 1000 s ahead (a negative delay wrapped in
+        // uint64 picoseconds), is a caller bug and the abort alone does not
+        // say which.
         std::cerr << "EventList::sourceIsPending: " << src.str() << " scheduled at "
                   << when << " ps, now " << now() << " ps (delta " 
                   << (long long)(when - now()) << ")" << std::endl;
+        assert(when >= now() && when - now() <= (simtime_picosec)1000000 * 1000000000ULL);
     }
     assert(when>=now());
     if (_endtime==0 || when<_endtime)

@@ -11,6 +11,7 @@
 
 uint64_t TcpSrc::_global_rtx_count = 0;
 bool TcpSrc::_quiet_flow_log = false;
+bool TcpSrc::_fatal_rtx_timeout = false;
 
 TcpSrc::TcpSrc(TcpLogger* logger, TrafficLogger* pktlogger, 
                EventList &eventlist)
@@ -556,6 +557,15 @@ void TcpSrc::rtx_timer_hook(simtime_picosec now, simtime_picosec period) {
          << _mdev/1000000000 << " RTT "<< _rtt/1000000000 << " SEQ " << _last_acked / _mss << " HSENT "  << _highest_sent 
          << " CWND "<< _cwnd/_mss << " FAST RECOVERY? " <<         _in_fast_recovery << " Flow ID " 
          << str()  << endl;
+    if (_fatal_rtx_timeout) {
+        cerr << "TCP_RTX_TIMEOUT_FATAL flow=" << str() << " at_ns=" << now / 1000
+             << " last_acked=" << _last_acked << " highest_sent=" << _highest_sent
+             << " cwnd_bytes=" << _cwnd
+             << ": a -nocc serving run lost packets; the queue (-q) cannot hold this window (-maxwin)"
+             << endl;
+        cout.flush();
+        abort();
+    }
 
     // here we can run into phase effects because the timer is checked
     // only periodically for ALL flows but if we keep the difference
