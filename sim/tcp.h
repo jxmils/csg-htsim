@@ -52,6 +52,10 @@ public:
     inline uint32_t live_packets() const {return _flow.live_packets();}
     void set_ssthresh(uint64_t s){_ssthresh = s;}
     void set_cwnd(uint64_t s){_cwnd = s;}
+    // Pre-connected flow: no SYN / SYN-ACK round trip before the first data
+    // packet (a persistent channel, as NCCL keeps between collective steps);
+    // the first data packet carries seqno 1 as the SYN would have.
+    void set_preconnected(bool b){_preconnected = b;}
     // Total retransmissions across all TcpSrc instances (RTO and fast
     // retransmit both funnel through retransmit_packet). Lets a caller
     // assert loss-freedom after a run.
@@ -103,6 +107,7 @@ public:
     bool _in_fast_recovery;
 
     bool _established;
+    bool _preconnected = false;
 
     uint32_t _drops;
 

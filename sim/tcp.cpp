@@ -94,7 +94,7 @@ void TcpSrc::set_app_limit(int pktps) {
 void 
 TcpSrc::startflow() {
     _unacked = _cwnd;
-    _established = false;
+    _established = _preconnected;   // skip the handshake on a persistent channel
 
     send_packets();
 }
